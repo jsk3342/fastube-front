@@ -33,6 +33,8 @@ exports.handler = async function (event, context) {
       };
     }
 
+    console.log(`비디오 정보 요청: videoId=${videoId}`);
+
     // YouTube 동영상 정보 URL
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
@@ -46,18 +48,57 @@ exports.handler = async function (event, context) {
       },
     });
 
-    // 간단한 정보 추출 (실제 프로덕션에서는 더 정교한 파싱 필요)
+    // HTML에서 비디오 정보 추출
     const html = response.data;
 
-    // 임시 응답 데이터 (실제로는 HTML에서 파싱해야 함)
+    // 제목 추출
+    let title = `YouTube 비디오 (${videoId})`;
+    const titleMatch = html.match(/<title>([^<]*)<\/title>/);
+    if (titleMatch && titleMatch[1]) {
+      title = titleMatch[1].replace(" - YouTube", "");
+    }
+
+    // 채널 이름 추출
+    let channelName = "채널 이름";
+    const channelMatch = html.match(/"ownerChannelName":"([^"]*)"/);
+    if (channelMatch && channelMatch[1]) {
+      channelName = channelMatch[1];
+    }
+
+    // 동영상 길이 추출 (초 단위)
+    let duration = 0;
+    const durationMatch = html.match(/"lengthSeconds":"(\d+)"/);
+    if (durationMatch && durationMatch[1]) {
+      duration = parseInt(durationMatch[1], 10);
+    }
+
+    // 사용 가능한 자막 언어 목록 (간단한 정규식으로 추출)
+    let availableLanguages = ["ko", "en"];
+    const captionsMatch = html.match(/"captionTracks":\[(.*?)\]/s);
+    if (captionsMatch && captionsMatch[1]) {
+      const captionsData = captionsMatch[1];
+      const languageCodes = captionsData.match(/"languageCode":"([^"]*)"/g);
+
+      if (languageCodes && languageCodes.length > 0) {
+        availableLanguages = languageCodes.map((code) =>
+          code.replace(/"languageCode":"([^"]*)"/, "$1")
+        );
+      }
+    }
+
+    console.log(
+      `비디오 정보 추출 완료: 제목=${title}, 채널=${channelName}, 길이=${duration}초`
+    );
+
+    // 추출된 정보로 응답 생성
     const videoInfo = {
       success: true,
       data: {
-        title: videoId ? `YouTube 비디오 (${videoId})` : "YouTube 비디오",
-        channelName: "채널 이름",
+        title,
+        channelName,
         thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-        duration: 120, // 예시 값
-        availableLanguages: ["ko", "en"],
+        duration,
+        availableLanguages,
       },
     };
 

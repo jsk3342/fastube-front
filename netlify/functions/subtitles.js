@@ -40,36 +40,32 @@ exports.handler = async function (event, context) {
       };
     }
 
-    // 간단한 데모 자막 생성
-    const generateDemoSubtitles = (videoId, language) => {
-      const subtitles = [];
+    console.log(
+      `YouTube 자막 추출 시작: videoId=${videoId}, language=${language}`
+    );
 
-      // 시간 포맷을 "00:00.000" 형식으로 변환하는 함수
-      const formatTime = (seconds) => {
-        const minutes = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        const ms = Math.floor((seconds % 1) * 1000);
+    // 실제 YouTube 자막 가져오기
+    const fetchRealSubtitles = async (videoId, language) => {
+      try {
+        // youtube-caption-scraper 라이브러리를 사용하여 실제 자막 가져오기
+        const options = {
+          videoID: videoId,
+          lang: language || "ko", // 기본값 한국어
+        };
 
-        return `${minutes.toString().padStart(2, "0")}:${secs
-          .toString()
-          .padStart(2, "0")}.${ms.toString().padStart(3, "0")}`;
-      };
+        console.log("자막 요청 옵션:", options);
+        const captions = await getSubtitles(options);
+        console.log(`자막 ${captions.length}개 가져옴`);
 
-      for (let i = 0; i < 10; i++) {
-        const startSeconds = i * 10;
-        subtitles.push({
-          start: startSeconds.toString(),
-          dur: "5",
-          text: `이것은 ${language} 자막의 ${
-            i + 1
-          }번째 문장입니다. (비디오 ID: ${videoId})`,
-        });
+        return captions;
+      } catch (error) {
+        console.error("자막 가져오기 실패:", error);
+        // 에러 발생 시 빈 배열 대신 에러를 throw
+        throw new Error(`자막 가져오기 실패: ${error.message}`);
       }
-
-      return subtitles;
     };
 
-    // 비디오 정보
+    // 비디오 정보 가져오기
     const getVideoInfo = async (videoId) => {
       try {
         // YouTube에 요청 보내기
@@ -83,10 +79,26 @@ exports.handler = async function (event, context) {
           },
         });
 
-        // 간단한 정보로 응답
+        // HTML에서 비디오 제목과 채널 정보 추출 시도
+        const html = response.data;
+        let title = videoId;
+        let channelName = "채널";
+
+        // 제목 추출 시도
+        const titleMatch = html.match(/<title>([^<]*)<\/title>/);
+        if (titleMatch && titleMatch[1]) {
+          title = titleMatch[1].replace(" - YouTube", "");
+        }
+
+        // 채널 이름 추출 시도 (간단한 방식)
+        const channelMatch = html.match(/"ownerChannelName":"([^"]*)"/);
+        if (channelMatch && channelMatch[1]) {
+          channelName = channelMatch[1];
+        }
+
         return {
-          title: `YouTube 비디오 (${videoId})`,
-          channelName: "채널 이름",
+          title,
+          channelName,
           thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
         };
       } catch (error) {
@@ -101,9 +113,12 @@ exports.handler = async function (event, context) {
 
     // 병렬로 자막과 비디오 정보 가져오기
     const [subtitles, videoInfo] = await Promise.all([
-      generateDemoSubtitles(videoId, language),
+      fetchRealSubtitles(videoId, language),
       getVideoInfo(videoId),
     ]);
+
+    // 자막 텍스트 결합
+    const fullText = subtitles.map((item) => item.text).join(" ");
 
     return {
       statusCode: 200,
@@ -112,7 +127,7 @@ exports.handler = async function (event, context) {
         success: true,
         data: {
           subtitles,
-          fullText: subtitles.map((item) => item.text).join(" "),
+          fullText,
           videoInfo: {
             ...videoInfo,
             videoId,
