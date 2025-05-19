@@ -5,6 +5,8 @@
 
 import { type Caption } from "youtube-captions-scraper";
 import axios from "axios";
+import { api } from "@/apis";
+import { ENDPOINTS } from "@/apis/endpoints";
 
 interface YouTubeSubtitleTrack {
   baseUrl: string;
@@ -12,6 +14,12 @@ interface YouTubeSubtitleTrack {
   languageCode: string;
   kind?: string;
   isTranslatable?: boolean;
+}
+
+export interface VideoInfo {
+  title: string;
+  channelName: string;
+  thumbnailUrl: string;
 }
 
 // YouTube 비디오에서 사용 가능한 자막 트랙 목록 가져오기
@@ -91,59 +99,42 @@ export async function getSubtitlesFromUrl(url: string): Promise<Caption[]> {
   }
 }
 
-// 비디오 ID와 언어 코드로 자막 가져오기
+// YouTube 자막을 가져오는 함수
 export async function getYouTubeSubtitles(
   videoId: string,
-  languageCode: string = "ko"
+  language = "ko"
 ): Promise<Caption[]> {
   try {
-    // 자막 트랙 URL 가져오기
-    const trackUrl = await getSubtitleTrackUrl(videoId, languageCode);
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    const { data } = await api.post(ENDPOINTS.SUBTITLES, { url, language });
 
-    if (!trackUrl) {
-      throw new Error(`${languageCode} 언어의 자막을 찾을 수 없습니다.`);
+    if (data.success && data.data.subtitles) {
+      return data.data.subtitles;
     }
 
-    // XML 자막 가져오기 및 파싱
-    return await getSubtitlesFromUrl(trackUrl);
+    throw new Error("자막을 가져올 수 없습니다.");
   } catch (error) {
-    console.error("자막 가져오기 실패:", error);
+    console.error("자막 트랙 가져오기 실패:", error);
     throw error;
   }
 }
 
-// 비디오 정보 가져오기
-export async function getVideoInfo(videoId: string) {
+// YouTube 비디오 정보를 가져오는 함수
+export async function getVideoInfo(videoId: string): Promise<VideoInfo> {
   try {
-    // 비디오 페이지 가져오기
-    const response = await axios.get(`/api/video-info/watch?v=${videoId}`);
-    const html = response.data;
+    const { data } = await api.get(`${ENDPOINTS.VIDEO_INFO}?v=${videoId}`);
 
-    // 비디오 정보 추출
-    const playerConfigMatch = html.match(
-      /ytInitialPlayerResponse\s*=\s*({.*?});/s
-    );
-    if (!playerConfigMatch || !playerConfigMatch[1]) {
-      throw new Error("비디오 정보를 가져올 수 없습니다.");
+    if (data.success && data.data) {
+      return {
+        title: data.data.title,
+        channelName: data.data.channelName,
+        thumbnailUrl: data.data.thumbnailUrl,
+      };
     }
 
-    const playerConfig = JSON.parse(playerConfigMatch[1]);
-    const videoDetails = playerConfig?.videoDetails || {};
-
-    return {
-      title: videoDetails.title || "YouTube 비디오",
-      channelName: videoDetails.author || "채널 이름",
-      thumbnailUrl:
-        videoDetails.thumbnail?.thumbnails?.[0]?.url ||
-        `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-      videoId: videoId,
-      availableLanguages:
-        playerConfig?.captions?.playerCaptionsTracklistRenderer?.captionTracks?.map(
-          (track: YouTubeSubtitleTrack) => track.languageCode
-        ) || ["ko", "en"],
-    };
+    throw new Error("비디오 정보를 가져올 수 없습니다.");
   } catch (error) {
     console.error("비디오 정보 가져오기 실패:", error);
-    throw new Error("비디오 정보를 가져올 수 없습니다.");
+    throw error;
   }
 }

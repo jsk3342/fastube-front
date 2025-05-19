@@ -27,6 +27,7 @@
     "react-dom": "^19.1.0",
     "shadcn-ui": "^0.9.5",
     "sonner": "^2.0.3",
+    "youtube-caption-scraper": "^1.0.0",
     "youtube-captions-scraper": "^2.0.3",
     "zustand": "^5.0.4"
   },
