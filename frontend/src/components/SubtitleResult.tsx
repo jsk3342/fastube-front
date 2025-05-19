@@ -313,7 +313,7 @@ const SubtitleResult = () => {
             <div
               key={index}
               className="p-2 border rounded hover:bg-accent cursor-pointer flex"
-              onClick={() => handleTimestampClick(item.start)}
+              onClick={() => handleTimestampClick(parseFloat(item.start))}
             >
               <div className="text-sm font-mono text-blue-500 min-w-[50px]">
                 {item.startFormatted}

@@ -5,7 +5,7 @@ import {
   HttpStatus,
   Logger,
 } from '@nestjs/common';
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 import { getSubtitles } from 'youtube-captions-scraper';
 import { DOMParser } from 'xmldom';
 import {
@@ -27,6 +27,14 @@ interface YouTubeOEmbedResponse {
   title: string;
   author_name: string;
   [key: string]: any;
+}
+
+interface YouTubePlayerConfig {
+  captions?: {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: YouTubeSubtitleTrack[];
+    };
+  };
 }
 
 @Injectable()
@@ -60,7 +68,7 @@ export class SubtitlesService {
           );
           try {
             captions = await this.getYouTubeSubtitles(videoId, 'en');
-          } catch (_) {
+          } catch (error: unknown) {
             // 영어 자막도 없는 경우
             throw new NotFoundException(
               '자막을 찾을 수 없습니다. 영어 자막도 제공되지 않습니다.',
@@ -128,7 +136,7 @@ export class SubtitlesService {
       }
 
       return null;
-    } catch (_) {
+    } catch (error: unknown) {
       return null;
     }
   }
@@ -231,7 +239,7 @@ export class SubtitlesService {
       const response = await axios.get(
         `https://www.youtube.com/watch?v=${videoId}`,
       );
-      const html = response.data;
+      const html = response.data as string;
 
       // 자막 정보 추출
       const playerConfigMatch = html.match(
@@ -241,7 +249,9 @@ export class SubtitlesService {
         throw new Error('비디오 정보를 가져올 수 없습니다.');
       }
 
-      const playerConfig = JSON.parse(playerConfigMatch[1]);
+      const playerConfig = JSON.parse(
+        playerConfigMatch[1],
+      ) as YouTubePlayerConfig;
       const captionTracks =
         playerConfig?.captions?.playerCaptionsTracklistRenderer
           ?.captionTracks || [];
@@ -263,7 +273,7 @@ export class SubtitlesService {
     try {
       // XML 형식 자막 가져오기
       const response = await axios.get(url);
-      const xml = response.data;
+      const xml = response.data as string;
 
       // DOM 파서 생성
       const parser = new DOMParser();
