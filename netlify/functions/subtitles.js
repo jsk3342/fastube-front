@@ -114,48 +114,16 @@ exports.handler = async function (event, context) {
         .padStart(2, "0")}`;
     };
 
-    // 데모 자막 생성 함수
-    const generateDemoSubtitles = () => {
-      console.log("데모 자막 생성 중...");
-      const subtitles = [];
+    // 실제 YouTube 자막 가져오기
+    console.log("유튜브 자막 가져오기 시도 중...");
+    const rawCaptions = await getSubtitles({
+      videoID: videoId,
+      lang: language || "ko",
+    });
+    console.log(`자막 가져오기 성공: ${rawCaptions.length}개 항목`);
 
-      for (let i = 0; i < 10; i++) {
-        const startSeconds = i * 10;
-        subtitles.push({
-          start: startSeconds,
-          end: startSeconds + 5,
-          text: `이것은 ${language || "ko"} 자막의 ${
-            i + 1
-          }번째 문장입니다. (비디오 ID: ${videoId})`,
-          startFormatted: formatTime(startSeconds),
-        });
-      }
-
-      return subtitles;
-    };
-
-    let subtitles;
-    let isDemo = false;
-
-    try {
-      // 실제 YouTube 자막 가져오기 시도
-      console.log("유튜브 자막 가져오기 시도 중...");
-      const rawCaptions = await getSubtitles({
-        videoID: videoId,
-        lang: language || "ko",
-      });
-      console.log(`자막 가져오기 성공: ${rawCaptions.length}개 항목`);
-
-      // 자막 가공
-      subtitles = processCaptions(rawCaptions);
-    } catch (error) {
-      console.error("YouTube 자막 가져오기 실패:", error.message);
-
-      // 실패 시 데모 자막 사용
-      subtitles = generateDemoSubtitles();
-      isDemo = true;
-      console.log("데모 자막으로 대체합니다.");
-    }
+    // 자막 가공
+    const subtitles = processCaptions(rawCaptions);
 
     // 비디오 정보 가져오기
     const videoInfo = await getVideoInfo();
@@ -170,10 +138,10 @@ exports.handler = async function (event, context) {
       body: JSON.stringify({
         success: true,
         data: {
-          subtitles: subtitles,
-          fullText: fullText,
-          videoInfo: videoInfo,
-          isDemo: isDemo,
+          subtitles,
+          fullText,
+          videoInfo,
+          isDemo: false,
         },
       }),
     };
