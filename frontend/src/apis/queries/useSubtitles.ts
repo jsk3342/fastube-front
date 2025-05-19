@@ -108,34 +108,31 @@ export function useSubtitles() {
     SubtitleRequest
   >({
     mutationFn: async (params) => {
-      try {
-        // 백엔드 API 호출
-        const { data } = await api.post<SubtitleResponse>(
-          ENDPOINTS.SUBTITLES,
-          params
-        );
+      // 백엔드 API 호출
+      const { data } = await api.post<SubtitleResponse>(
+        ENDPOINTS.SUBTITLES,
+        params
+      );
 
-        // 백엔드 응답을 프론트엔드 형식으로 변환
-        const enhancedSubtitles = enhanceSubtitleItems(data.data.subtitles);
+      console.log("data", data);
 
-        // 텍스트 필드명 변환 (text → fullText)
-        const responseData = {
-          success: data.success,
-          data: {
-            subtitles: enhancedSubtitles,
-            fullText: data.data.text,
-            videoInfo: {
-              ...data.data.videoInfo,
-              videoId: extractVideoID(params.url) || "",
-            },
+      // 백엔드 응답을 프론트엔드 형식으로 변환
+      const enhancedSubtitles = enhanceSubtitleItems(data.data.subtitles);
+
+      // 텍스트 필드명 변환 (text → fullText)
+      const responseData = {
+        success: data.success,
+        data: {
+          subtitles: enhancedSubtitles,
+          fullText: data.data.text,
+          videoInfo: {
+            ...data.data.videoInfo,
+            videoId: extractVideoID(params.url) || "",
           },
-        };
+        },
+      };
 
-        return responseData;
-      } catch (error) {
-        console.error("자막 처리 실패:", error);
-        throw new Error("자막을 추출할 수 없습니다.");
-      }
+      return responseData;
     },
   });
 }
