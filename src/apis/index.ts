@@ -4,7 +4,7 @@ import axios from "axios";
 const isDevelopment = import.meta.env.DEV;
 const baseURL = isDevelopment
   ? import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api"
-  : "/api"; // 배포 환경에서는 상대 경로 사용 (Netlify Functions로 라우팅됨)
+  : "/.netlify/functions"; // 배포 환경에서는 Netlify Functions 경로 직접 사용
 
 export const api = axios.create({
   baseURL,
