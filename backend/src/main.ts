@@ -11,6 +11,13 @@ async function bootstrap() {
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:5175',
+      'http://localhost',
+      'http://localhost:80',
+      'http://frontend',
+      'http://frontend:80',
+      // AWS 배포 주소 추가
+      'http://13.209.41.149',
+      'http://ec2-13-209-41-149.ap-northeast-2.compute.amazonaws.com',
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
