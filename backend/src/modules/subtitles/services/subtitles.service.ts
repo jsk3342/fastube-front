@@ -15,6 +15,9 @@ import {
   CaptionDto,
 } from '../dto/subtitle.dto';
 
+// 디버깅 로그 추가
+const DEBUG = true;
+
 interface YouTubeSubtitleTrack {
   baseUrl: string;
   name: { simpleText: string };
@@ -23,10 +26,11 @@ interface YouTubeSubtitleTrack {
   isTranslatable?: boolean;
 }
 
+// YouTube API 응답 인터페이스
 interface YouTubeOEmbedResponse {
   title: string;
   author_name: string;
-  [key: string]: any;
+  thumbnail_url: string;
 }
 
 interface YouTubePlayerConfig {
@@ -51,6 +55,13 @@ export class SubtitlesService {
         throw new NotFoundException('유효한 YouTube URL이 아닙니다.');
       }
 
+      // 요청 정보 로깅
+      if (DEBUG) {
+        this.logger.log(
+          `자막 추출 요청: videoId=${videoId}, language=${subtitleRequestDto.language || 'ko'}`,
+        );
+      }
+
       // 비디오 정보 가져오기
       const videoInfo = await this.getVideoInfo(videoId);
 
@@ -59,7 +70,20 @@ export class SubtitlesService {
       const requestedLanguage = subtitleRequestDto.language || 'ko';
 
       try {
+        // youtube-captions-scraper 라이브러리를 사용하여 자막 가져오기 시도
+        if (DEBUG) {
+          this.logger.log(
+            `${requestedLanguage} 언어로 자막 가져오기 시도 중...`,
+          );
+        }
+
         captions = await this.getYouTubeSubtitles(videoId, requestedLanguage);
+
+        if (DEBUG) {
+          this.logger.log(
+            `${requestedLanguage} 자막 가져오기 성공: ${captions.length}개 자막`,
+          );
+        }
       } catch (error) {
         // 요청한 언어가 실패했을 경우 영어 자막 시도
         if (requestedLanguage !== 'en') {
@@ -68,14 +92,25 @@ export class SubtitlesService {
           );
           try {
             captions = await this.getYouTubeSubtitles(videoId, 'en');
+            if (DEBUG) {
+              this.logger.log(
+                `영어 자막 가져오기 성공: ${captions.length}개 자막`,
+              );
+            }
           } catch (error: unknown) {
             // 영어 자막도 없는 경우
+            this.logger.error(
+              `영어 자막도 찾을 수 없음: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+            );
             throw new NotFoundException(
               '자막을 찾을 수 없습니다. 영어 자막도 제공되지 않습니다.',
             );
           }
         } else {
           // 요청한 언어가 이미 영어인 경우
+          this.logger.error(
+            `영어 자막 가져오기 실패: ${error instanceof Error ? error.message : '알 수 없는 오류'}`,
+          );
           throw error;
         }
       }
@@ -119,26 +154,14 @@ export class SubtitlesService {
   }
 
   /**
-   * YouTube URL에서 동영상 ID를 추출합니다.
+   * YouTube URL에서 비디오 ID 추출
    */
   private extractVideoId(url: string): string | null {
-    try {
-      const urlObj = new URL(url);
+    const regExp =
+      /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+    const match = url.match(regExp);
 
-      // youtube.com/watch?v=VIDEO_ID 형식
-      if (urlObj.hostname.includes('youtube.com')) {
-        return urlObj.searchParams.get('v');
-      }
-
-      // youtu.be/VIDEO_ID 형식
-      if (urlObj.hostname === 'youtu.be') {
-        return urlObj.pathname.substring(1);
-      }
-
-      return null;
-    } catch (error: unknown) {
-      return null;
-    }
+    return match && match[2].length === 11 ? match[2] : null;
   }
 
   /**
@@ -150,14 +173,32 @@ export class SubtitlesService {
   ): Promise<CaptionDto[]> {
     try {
       // youtube-captions-scraper 라이브러리를 사용하여 자막 가져오기
+      if (DEBUG) {
+        this.logger.log(
+          `youtube-captions-scraper 라이브러리로 자막 요청: videoID=${videoId}, lang=${language}`,
+        );
+      }
+
       const captions = await getSubtitles({
         videoID: videoId,
         lang: language,
       });
 
+      if (DEBUG) {
+        this.logger.log(`자막 요청 응답 받음: ${captions?.length || 0}개 항목`);
+        if (captions?.length > 0) {
+          this.logger.log(`첫 번째 자막 샘플: ${JSON.stringify(captions[0])}`);
+        }
+      }
+
+      // start와 dur이 숫자가 아니라 문자열인 경우 처리
       return captions.map((caption) => ({
-        start: caption.start,
-        dur: caption.dur,
+        start:
+          typeof caption.start === 'string'
+            ? caption.start
+            : String(caption.start),
+        dur:
+          typeof caption.dur === 'string' ? caption.dur : String(caption.dur),
         text: caption.text,
       }));
     } catch (error) {
@@ -167,15 +208,40 @@ export class SubtitlesService {
       );
 
       // 자막을 가져오는 다른 방법 시도 (웹 스크래핑)
+      if (DEBUG) {
+        this.logger.log('웹 스크래핑 방식으로 자막 가져오기 시도');
+      }
+
       try {
         const tracks = await this.getSubtitleTracks(videoId);
+
+        if (DEBUG) {
+          this.logger.log(
+            `자막 트랙 개수: ${tracks.length}, 언어 목록: ${tracks.map((t) => t.languageCode).join(', ')}`,
+          );
+        }
 
         // 요청된 언어 코드와 일치하는 자막 트랙 찾기
         const track = tracks.find((track) => track.languageCode === language);
 
         if (track) {
+          if (DEBUG) {
+            this.logger.log(
+              `${language} 언어의 자막 트랙 발견: ${track.baseUrl}`,
+            );
+          }
+
           const subtitles = await this.getSubtitlesFromUrl(track.baseUrl);
+
+          if (DEBUG) {
+            this.logger.log(`XML 자막 파싱 성공: ${subtitles.length}개 자막`);
+          }
+
           return subtitles;
+        }
+
+        if (DEBUG) {
+          this.logger.log(`${language} 언어의 자막 트랙을 찾지 못함`);
         }
 
         throw new NotFoundException(
@@ -186,6 +252,8 @@ export class SubtitlesService {
           scrapingError instanceof Error
             ? scrapingError.message
             : '알 수 없는 오류';
+
+        this.logger.error(`웹 스크래핑 자막 추출 실패: ${errorMessage}`);
 
         throw new NotFoundException(
           '자막을 가져올 수 없습니다: ' + errorMessage,
@@ -207,6 +275,10 @@ export class SubtitlesService {
       const response = await axios.get<YouTubeOEmbedResponse>(
         `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
       );
+
+      if (DEBUG) {
+        this.logger.log(`비디오 정보 가져오기 성공: ${response.data.title}`);
+      }
 
       return {
         title: response.data.title,
@@ -256,6 +328,12 @@ export class SubtitlesService {
         playerConfig?.captions?.playerCaptionsTracklistRenderer
           ?.captionTracks || [];
 
+      if (DEBUG) {
+        this.logger.log(
+          `자막 트랙 정보 파싱 성공: ${captionTracks.length}개 트랙`,
+        );
+      }
+
       return captionTracks;
     } catch (error) {
       this.logger.error(
@@ -275,10 +353,18 @@ export class SubtitlesService {
       const response = await axios.get(url);
       const xml = response.data as string;
 
+      if (DEBUG) {
+        this.logger.log(`XML 자막 데이터 가져오기 성공: ${xml.length} 바이트`);
+      }
+
       // DOM 파서 생성
       const parser = new DOMParser();
       const xmlDoc = parser.parseFromString(xml, 'text/xml');
       const textElements = xmlDoc.getElementsByTagName('text');
+
+      if (DEBUG) {
+        this.logger.log(`XML 파싱 성공: ${textElements.length}개 텍스트 요소`);
+      }
 
       // CaptionDto 형식으로 변환 - NodeList를 Array로 변환하여 map 사용
       return Array.from(textElements).map((element) => {
