@@ -7,3 +7,9 @@
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200 
+  
+# video/info 엔드포인트에 대한 명시적 리다이렉트 규칙
+[[redirects]]
+  from = "/api/video/info"
+  to = "/.netlify/functions/video-info"
+  status = 200 
