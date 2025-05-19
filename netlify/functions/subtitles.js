@@ -41,56 +41,34 @@ exports.handler = async function (event, context) {
     }
 
     console.log(
-      `YouTube 자막 추출 시작: videoId=${videoId}, language=${language}`
+      `YouTube 자막 추출 시작: videoId=${videoId}, language=${language || "ko"}`
     );
 
-    // 실제 YouTube 자막 가져오기
-    const fetchRealSubtitles = async (videoId, language) => {
-      try {
-        // youtube-caption-scraper 라이브러리를 사용하여 실제 자막 가져오기
-        const options = {
-          videoID: videoId,
-          lang: language || "ko", // 기본값 한국어
-        };
-
-        console.log("자막 요청 옵션:", options);
-        const captions = await getSubtitles(options);
-        console.log(`자막 ${captions.length}개 가져옴`);
-
-        return captions;
-      } catch (error) {
-        console.error("자막 가져오기 실패:", error);
-        // 에러 발생 시 빈 배열 대신 에러를 throw
-        throw new Error(`자막 가져오기 실패: ${error.message}`);
-      }
-    };
-
     // 비디오 정보 가져오기
-    const getVideoInfo = async (videoId) => {
+    const getVideoInfo = async () => {
       try {
-        // YouTube에 요청 보내기
-        const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-        const response = await axios({
-          method: "GET",
-          url: youtubeUrl,
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          },
-        });
+        const response = await axios.get(
+          `https://www.youtube.com/watch?v=${videoId}`,
+          {
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+          }
+        );
 
-        // HTML에서 비디오 제목과 채널 정보 추출 시도
+        // HTML에서 정보 추출 시도
         const html = response.data;
-        let title = videoId;
-        let channelName = "채널";
+        let title = `YouTube 비디오 (${videoId})`;
+        let channelName = "채널 이름";
 
-        // 제목 추출 시도
+        // 제목 추출
         const titleMatch = html.match(/<title>([^<]*)<\/title>/);
         if (titleMatch && titleMatch[1]) {
           title = titleMatch[1].replace(" - YouTube", "");
         }
 
-        // 채널 이름 추출 시도 (간단한 방식)
+        // 채널명 추출
         const channelMatch = html.match(/"ownerChannelName":"([^"]*)"/);
         if (channelMatch && channelMatch[1]) {
           channelName = channelMatch[1];
@@ -100,38 +78,102 @@ exports.handler = async function (event, context) {
           title,
           channelName,
           thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          videoId,
         };
       } catch (error) {
-        console.error("비디오 정보 가져오기 실패:", error);
+        console.error("비디오 정보 가져오기 실패:", error.message);
         return {
           title: `YouTube 비디오 (${videoId})`,
           channelName: "채널 이름",
           thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+          videoId,
         };
       }
     };
 
-    // 병렬로 자막과 비디오 정보 가져오기
-    const [subtitles, videoInfo] = await Promise.all([
-      fetchRealSubtitles(videoId, language),
-      getVideoInfo(videoId),
-    ]);
+    // 자막 가공 함수
+    const processCaptions = (captions) => {
+      return captions.map((caption) => {
+        const start = parseFloat(caption.start);
+        const dur = parseFloat(caption.dur);
+        return {
+          text: caption.text,
+          start,
+          end: start + dur,
+          startFormatted: formatTime(start),
+        };
+      });
+    };
 
-    // 자막 텍스트 결합
+    // 시간 포맷팅 함수
+    const formatTime = (seconds) => {
+      const mins = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${mins.toString().padStart(2, "0")}:${secs
+        .toString()
+        .padStart(2, "0")}`;
+    };
+
+    // 데모 자막 생성 함수
+    const generateDemoSubtitles = () => {
+      console.log("데모 자막 생성 중...");
+      const subtitles = [];
+
+      for (let i = 0; i < 10; i++) {
+        const startSeconds = i * 10;
+        subtitles.push({
+          start: startSeconds,
+          end: startSeconds + 5,
+          text: `이것은 ${language || "ko"} 자막의 ${
+            i + 1
+          }번째 문장입니다. (비디오 ID: ${videoId})`,
+          startFormatted: formatTime(startSeconds),
+        });
+      }
+
+      return subtitles;
+    };
+
+    let subtitles;
+    let isDemo = false;
+
+    try {
+      // 실제 YouTube 자막 가져오기 시도
+      console.log("유튜브 자막 가져오기 시도 중...");
+      const rawCaptions = await getSubtitles({
+        videoID: videoId,
+        lang: language || "ko",
+      });
+      console.log(`자막 가져오기 성공: ${rawCaptions.length}개 항목`);
+
+      // 자막 가공
+      subtitles = processCaptions(rawCaptions);
+    } catch (error) {
+      console.error("YouTube 자막 가져오기 실패:", error.message);
+
+      // 실패 시 데모 자막 사용
+      subtitles = generateDemoSubtitles();
+      isDemo = true;
+      console.log("데모 자막으로 대체합니다.");
+    }
+
+    // 비디오 정보 가져오기
+    const videoInfo = await getVideoInfo();
+
+    // 전체 자막 텍스트 조합
     const fullText = subtitles.map((item) => item.text).join(" ");
 
+    // 최종 응답
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
         success: true,
         data: {
-          subtitles,
-          fullText,
-          videoInfo: {
-            ...videoInfo,
-            videoId,
-          },
+          subtitles: subtitles,
+          fullText: fullText,
+          videoInfo: videoInfo,
+          isDemo: isDemo,
         },
       }),
     };

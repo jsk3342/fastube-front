@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
-import { type Caption } from "youtube-captions-scraper";
-import { getYouTubeSubtitles, getVideoInfo } from "@/utils/youtubeCaptions";
+import { api } from "@/apis";
+import { ENDPOINTS } from "@/apis/endpoints";
 
 export interface SubtitleRequest {
   url: string;
@@ -25,6 +25,7 @@ export interface SubtitleResponse {
       thumbnailUrl: string;
       videoId: string;
     };
+    isDemo?: boolean;
   };
 }
 
@@ -36,57 +37,6 @@ export function extractVideoID(url: string): string | null {
   return match && match[2].length === 11 ? match[2] : null;
 }
 
-// 초 단위를 "00:00" 형식으로 변환하는 함수
-const formatTime = (seconds: number): string => {
-  const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60);
-  return `${mins.toString().padStart(2, "0")}:${secs
-    .toString()
-    .padStart(2, "0")}`;
-};
-
-// HTML 엔티티를 정상 문자로 변환하는 함수
-const decodeHtmlEntities = (text: string): string => {
-  // 숫자 참조 형식 HTML 엔티티(&#39; 등) 변환을 위한 임시 요소 생성
-  const textArea = document.createElement("textarea");
-  textArea.innerHTML = text;
-  let decoded = textArea.value;
-
-  // 이름 참조 형식 엔티티(&quot; 등) 수동 변환
-  const entities: Record<string, string> = {
-    "&quot;": '"',
-    "&apos;": "'",
-    "&amp;": "&",
-    "&lt;": "<",
-    "&gt;": ">",
-    "&nbsp;": " ",
-  };
-
-  decoded = decoded.replace(
-    /&quot;|&apos;|&amp;|&lt;|&gt;|&nbsp;/g,
-    (match) => entities[match] || match
-  );
-
-  return decoded;
-};
-
-// Caption 배열을 SubtitleItem 배열로 변환하는 함수
-const convertCaptionsToSubtitleItems = (
-  captions: Caption[]
-): SubtitleItem[] => {
-  return captions.map((caption) => {
-    const start = parseFloat(caption.start);
-    const dur = parseFloat(caption.dur);
-
-    return {
-      text: decodeHtmlEntities(caption.text),
-      start,
-      end: start + dur,
-      startFormatted: formatTime(start),
-    };
-  });
-};
-
 export function useSubtitles() {
   return useMutation<SubtitleResponse, Error, SubtitleRequest>({
     mutationFn: async (params) => {
@@ -97,32 +47,22 @@ export function useSubtitles() {
       }
 
       try {
-        // 병렬로 자막과 비디오 정보 가져오기
-        const [captions, videoDetails] = await Promise.all([
-          getYouTubeSubtitles(videoId, params.language),
-          getVideoInfo(videoId),
-        ]);
+        console.log("자막 요청 중...", params);
 
-        // 자막 아이템으로 변환 (타임스탬프 정보 포함)
-        const subtitles = convertCaptionsToSubtitleItems(captions);
+        // 서버리스 함수에서 이미 가공된 데이터 받아오기
+        const response = await api.post(ENDPOINTS.SUBTITLES, params);
 
-        // 전체 텍스트 조합 (HTML 엔티티 변환 적용)
-        const fullText = subtitles.map((item) => item.text).join(" ");
+        console.log("자막 응답 수신:", response.data);
 
-        // 응답 형태로 가공
-        return {
-          success: true,
-          data: {
-            subtitles,
-            fullText,
-            videoInfo: {
-              title: videoDetails.title,
-              channelName: videoDetails.channelName,
-              thumbnailUrl: videoDetails.thumbnailUrl,
-              videoId,
-            },
-          },
-        };
+        // 응답이 성공적이면 그대로 반환
+        if (response.data && response.data.success) {
+          // 서버리스 함수가 이미 완전히 가공된 데이터를 반환하므로 그대로 사용
+          return response.data;
+        } else {
+          throw new Error(
+            response.data?.error || "자막 데이터를 가져오는데 실패했습니다."
+          );
+        }
       } catch (error) {
         console.error("자막 처리 실패:", error);
         throw new Error("자막을 추출할 수 없습니다.");
