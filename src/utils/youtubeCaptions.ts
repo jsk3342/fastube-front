@@ -105,11 +105,22 @@ export async function getYouTubeSubtitles(
   language = "ko"
 ): Promise<Caption[]> {
   try {
+    console.log(`자막 요청: 비디오 ID=${videoId}, 언어=${language}`);
     const url = `https://www.youtube.com/watch?v=${videoId}`;
-    const { data } = await api.post(ENDPOINTS.SUBTITLES, { url, language });
 
-    if (data.success && data.data.subtitles) {
-      return data.data.subtitles;
+    // API 요청 경로 로깅
+    console.log(`API 요청 경로: ${api.defaults.baseURL}${ENDPOINTS.SUBTITLES}`);
+
+    const response = await api.post(ENDPOINTS.SUBTITLES, { url, language });
+    console.log("자막 API 응답:", response.status, response.statusText);
+
+    if (response.data.success && response.data.data.subtitles) {
+      // 서버에서 받은 자막 데이터를 Caption 형식으로 변환
+      return response.data.data.subtitles.map((item: any) => ({
+        start: item.start.toString(),
+        dur: "5", // 고정된 지속 시간
+        text: item.text,
+      }));
     }
 
     throw new Error("자막을 가져올 수 없습니다.");
@@ -122,13 +133,21 @@ export async function getYouTubeSubtitles(
 // YouTube 비디오 정보를 가져오는 함수
 export async function getVideoInfo(videoId: string): Promise<VideoInfo> {
   try {
-    const { data } = await api.get(`${ENDPOINTS.VIDEO_INFO}?v=${videoId}`);
+    console.log(`비디오 정보 요청: 비디오 ID=${videoId}`);
 
-    if (data.success && data.data) {
+    // API 요청 경로 로깅
+    console.log(
+      `API 요청 경로: ${api.defaults.baseURL}${ENDPOINTS.VIDEO_INFO}?v=${videoId}`
+    );
+
+    const response = await api.get(`${ENDPOINTS.VIDEO_INFO}?v=${videoId}`);
+    console.log("비디오 정보 API 응답:", response.status, response.statusText);
+
+    if (response.data.success && response.data.data) {
       return {
-        title: data.data.title,
-        channelName: data.data.channelName,
-        thumbnailUrl: data.data.thumbnailUrl,
+        title: response.data.data.title,
+        channelName: response.data.data.channelName,
+        thumbnailUrl: response.data.data.thumbnailUrl,
       };
     }
 

@@ -3,6 +3,7 @@
   publish = "dist"
   functions = "netlify/functions"
 
+# 일반적인 API 리다이렉트 규칙
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
@@ -12,4 +13,12 @@
 [[redirects]]
   from = "/api/video/info"
   to = "/.netlify/functions/video-info"
-  status = 200 
+  status = 200
+  force = true
+  
+# subtitles 엔드포인트에 대한 명시적 리다이렉트 규칙
+[[redirects]]
+  from = "/api/subtitles"
+  to = "/.netlify/functions/subtitles"
+  status = 200
+  force = true
