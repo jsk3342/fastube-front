@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../index";
-import { ENDPOINTS } from "../endpoints";
+// import { api } from "../index";  // 사용하지 않는 import 제거
+// import { ENDPOINTS } from "../endpoints";  // 사용하지 않는 import 제거
 import { extractVideoID } from "./useSubtitles";
 
 export interface VideoInfoResponse {
