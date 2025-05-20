@@ -146,6 +146,11 @@ export async function getSubtitlesDirectly(
   try {
     // 1. 자막 목록 가져오기
     console.log("[1단계] 자막 목록 요청 중...");
+    console.log(`[요청 URL] https://www.youtube.com/watch?v=${videoId}`);
+    console.log(
+      `[요청 헤더] User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36`
+    );
+
     const response = await axios.get(
       `https://www.youtube.com/watch?v=${videoId}`,
       {
@@ -156,6 +161,16 @@ export async function getSubtitlesDirectly(
       }
     );
     console.log("[1단계] 자막 목록 응답 받음");
+    console.log(`[응답 상태코드] ${response.status}`);
+    console.log(`[응답 헤더] ${JSON.stringify(response.headers)}`);
+    console.log(`[응답 데이터 크기] ${response.data?.length || 0} 바이트`);
+
+    // HTML 전체를 로깅하면 너무 많으니 일부만 로깅
+    const htmlPreview =
+      response.data.substring(0, 500) +
+      "... (중략) ..." +
+      response.data.substring(response.data.length - 500);
+    console.log(`[응답 HTML 미리보기] ${htmlPreview}`);
 
     // 2. 자막 데이터 추출
     console.log("[2단계] 자막 데이터 파싱 중...");
@@ -164,11 +179,37 @@ export async function getSubtitlesDirectly(
 
     if (!captionsMatch) {
       console.log("[2단계] 자막 데이터를 찾을 수 없음");
+      console.log(
+        `[전체 HTML 검색] "captions": 문자열 검색 결과: ${html.includes('"captions"')}`
+      );
+      console.log(`[정규식 결과] captionsMatch: ${captionsMatch}`);
+
+      // captions 관련 내용 추출 시도
+      const captionsIndex = html.indexOf('"captions"');
+      if (captionsIndex >= 0) {
+        const captionsContext = html.substring(
+          captionsIndex - 50,
+          captionsIndex + 200
+        );
+        console.log(`[captions 컨텍스트] ${captionsContext}`);
+      } else {
+        console.log('[captions 컨텍스트] "captions" 문자열을 찾을 수 없음');
+      }
+
       throw new Error(`Could not find captions for video: ${videoId}`);
     }
 
-    const captionsData = JSON.parse(captionsMatch[1]);
-    console.log("[2단계] 자막 데이터 파싱 완료");
+    console.log(`[2단계] captionsMatch 결과: ${captionsMatch[0]}`);
+
+    try {
+      const captionsData = JSON.parse(captionsMatch[1]);
+      console.log("[2단계] 자막 데이터 파싱 완료");
+      console.log(`[captionsData RAW] ${JSON.stringify(captionsData)}`);
+    } catch (parseError: any) {
+      console.error(`[2단계] 자막 데이터 JSON 파싱 실패: ${parseError}`);
+      console.log(`[파싱 실패 데이터] ${captionsMatch[1]}`);
+      throw new Error(`Failed to parse captions data: ${parseError.message}`);
+    }
 
     // 3. 자막 URL 찾기
     console.log("[3단계] 자막 URL 찾는 중...");
@@ -178,16 +219,52 @@ export async function getSubtitlesDirectly(
 
     if (!playerResponseMatch) {
       console.log("[3단계] 플레이어 응답을 찾을 수 없음");
+      console.log(
+        `[전체 HTML 검색] "playerCaptionsTracklistRenderer": 문자열 검색 결과: ${html.includes('"playerCaptionsTracklistRenderer"')}`
+      );
+
+      // 대체 정규식 시도
+      const altMatch = html.match(/"captionTracks":\s*(\[[^\]]+\])/);
+      if (altMatch) {
+        console.log(
+          `[대체 정규식 결과] captionTracks 직접 매치: ${altMatch[0]}`
+        );
+      } else {
+        console.log(`[대체 정규식 결과] captionTracks도 찾을 수 없음`);
+      }
+
       throw new Error(`Could not find player response for video: ${videoId}`);
     }
 
-    const playerResponse = JSON.parse(playerResponseMatch[1]);
-    console.log("[3단계] 플레이어 응답 파싱 완료");
+    console.log(`[3단계] playerResponseMatch 결과: ${playerResponseMatch[0]}`);
+
+    let playerResponse;
+    try {
+      playerResponse = JSON.parse(playerResponseMatch[1]);
+      console.log("[3단계] 플레이어 응답 파싱 완료");
+      console.log(`[playerResponse RAW] ${JSON.stringify(playerResponse)}`);
+    } catch (parseError: any) {
+      console.error(`[3단계] 플레이어 응답 JSON 파싱 실패: ${parseError}`);
+      console.log(`[파싱 실패 데이터] ${playerResponseMatch[1]}`);
+      throw new Error(`Failed to parse player response: ${parseError.message}`);
+    }
 
     // 4. 자막 URL 추출
     console.log("[4단계] 자막 URL 추출 중...");
     const captionTracks = playerResponse.captionTracks || [];
     console.log(`[4단계] 사용 가능한 자막 트랙 수: ${captionTracks.length}`);
+    console.log(`[captionTracks RAW] ${JSON.stringify(captionTracks)}`);
+
+    // 사용 가능한 모든 언어 출력
+    if (captionTracks.length > 0) {
+      const availableLanguages = captionTracks
+        .map(
+          (track: any) =>
+            `${track.languageCode}(${track.name?.simpleText || "Unknown"})`
+        )
+        .join(", ");
+      console.log(`[4단계] 사용 가능한 언어: ${availableLanguages}`);
+    }
 
     const targetCaption = captionTracks.find(
       (track: any) => track.languageCode === language
@@ -203,23 +280,52 @@ export async function getSubtitlesDirectly(
 
     // 5. 자막 데이터 가져오기
     console.log("[5단계] 자막 데이터 다운로드 중...");
-    const captionResponse = await axios.get(captionUrl);
-    console.log("[5단계] 자막 데이터 다운로드 완료");
+    console.log(`[자막 요청 URL] ${captionUrl}`);
+
+    let captionResponse;
+    try {
+      captionResponse = await axios.get(captionUrl);
+      console.log("[5단계] 자막 데이터 다운로드 완료");
+      console.log(`[자막 응답 상태코드] ${captionResponse.status}`);
+      console.log(
+        `[자막 응답 데이터 크기] ${captionResponse.data?.length || 0} 바이트`
+      );
+      console.log(
+        `[자막 응답 데이터 RAW] ${captionResponse.data.substring(0, 1000)}... (생략)`
+      );
+    } catch (captionError: any) {
+      console.error(`[5단계] 자막 데이터 다운로드 실패: ${captionError}`);
+      console.error(
+        `[자막 에러 상세] ${JSON.stringify(captionError.response || {})}`
+      );
+      throw new Error(
+        `Failed to download caption data: ${captionError.message}`
+      );
+    }
 
     // 6. 자막 파싱
     console.log("[6단계] 자막 파싱 중...");
     const subtitles = parseSubtitles(captionResponse.data);
     console.log(`[6단계] 파싱된 자막 수: ${subtitles.length}`);
+    if (subtitles.length > 0) {
+      console.log(`[6단계] 첫 번째 자막: ${JSON.stringify(subtitles[0])}`);
+      console.log(
+        `[6단계] 마지막 자막: ${JSON.stringify(subtitles[subtitles.length - 1])}`
+      );
+    }
 
     // 7. 자막 텍스트 추출
     console.log("[7단계] 자막 텍스트 추출 중...");
     const text = subtitles.map((subtitle) => subtitle.text).join("\n");
-    console.log("[7단계] 자막 텍스트 추출 완료");
+    console.log(`[7단계] 자막 텍스트 길이: ${text.length} 자`);
+    console.log(
+      `[7단계] 자막 텍스트 샘플: ${text.substring(0, 200)}... (생략)`
+    );
 
     // 8. 비디오 정보 추출
     console.log("[8단계] 비디오 정보 추출 중...");
     const videoInfo = extractVideoInfo(html);
-    console.log("[8단계] 비디오 정보 추출 완료");
+    console.log(`[8단계] 비디오 정보 추출 완료: ${JSON.stringify(videoInfo)}`);
 
     return {
       success: true,
@@ -228,8 +334,19 @@ export async function getSubtitlesDirectly(
         videoInfo,
       },
     };
-  } catch (error) {
+  } catch (error: any) {
     console.error("[자막 추출 실패] 상세 에러:", error);
+
+    // 네트워크 에러 추가 로깅
+    if (error.isAxiosError) {
+      console.error(`[네트워크 에러] ${error.message}`);
+      console.error(`[요청 설정] ${JSON.stringify(error.config || {})}`);
+      console.error(`[응답 상태] ${error.response?.status || "None"}`);
+      console.error(
+        `[응답 데이터] ${JSON.stringify(error.response?.data || {})}`
+      );
+    }
+
     throw error;
   }
 }
