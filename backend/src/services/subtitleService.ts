@@ -77,11 +77,14 @@ export class SubtitleService {
           return {
             success: true,
             data: {
+              subtitles: [],
               text: response.data.text,
-              videoInfo: response.data.videoInfo || {
-                title: "",
-                channelName: "",
-                thumbnailUrl: "",
+              videoInfo: {
+                ...(response.data.videoInfo || {
+                  title: "",
+                  channelName: "",
+                  thumbnailUrl: "",
+                }),
                 videoId,
               },
             },
@@ -105,11 +108,14 @@ export class SubtitleService {
             return {
               success: true,
               data: {
+                subtitles: [],
                 text: response.data.text,
-                videoInfo: response.data.videoInfo || {
-                  title: "",
-                  channelName: "",
-                  thumbnailUrl: "",
+                videoInfo: {
+                  ...(response.data.videoInfo || {
+                    title: "",
+                    channelName: "",
+                    thumbnailUrl: "",
+                  }),
                   videoId,
                 },
               },
