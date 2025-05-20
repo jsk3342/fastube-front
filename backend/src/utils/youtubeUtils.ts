@@ -1,3 +1,8 @@
+import he from "he";
+import axios from "axios";
+import { find } from "lodash";
+import striptags from "striptags";
+
 // YouTube URL에서 videoID를 추출하는 함수
 export function extractVideoID(url: string): string | null {
   const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
@@ -111,5 +116,92 @@ export async function fetchYouTubeVideoInfo(videoId: string) {
       thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
       videoId,
     };
+  }
+}
+
+/**
+ * YouTube 비디오에서 자막을 직접 추출하는 함수
+ * 외부 라이브러리 대신 직접 구현한 방식을 사용
+ */
+export async function getSubtitlesDirectly({
+  videoID,
+  lang = "en",
+}: {
+  videoID: string;
+  lang: string;
+}) {
+  try {
+    const { data } = await axios.get(`https://youtube.com/watch?v=${videoID}`);
+
+    // 자막 데이터에 접근할 수 있는지 확인
+    if (!data.includes("captionTracks"))
+      throw new Error(`Could not find captions for video: ${videoID}`);
+
+    const regex = /"captionTracks":(\[.*?\])/;
+    const match = regex.exec(data);
+
+    if (!match || !match[1]) {
+      throw new Error(`Could not extract caption tracks for video: ${videoID}`);
+    }
+
+    const { captionTracks } = JSON.parse(`{"captionTracks":${match[1]}}`);
+    const subtitle =
+      find(captionTracks, {
+        vssId: `.${lang}`,
+      }) ||
+      find(captionTracks, {
+        vssId: `a.${lang}`,
+      }) ||
+      find(
+        captionTracks,
+        ({ vssId }: { vssId: string }) => vssId && vssId.match(`.${lang}`)
+      );
+
+    // 요청한 언어의 자막이 있는지 확인
+    if (!subtitle || (subtitle && !subtitle.baseUrl))
+      throw new Error(`Could not find ${lang} captions for ${videoID}`);
+
+    const transcriptResponse = await axios.get(subtitle.baseUrl);
+    const transcript = transcriptResponse.data;
+
+    const lines = transcript
+      .replace('<?xml version="1.0" encoding="utf-8" ?><transcript>', "")
+      .replace("</transcript>", "")
+      .split("</text>")
+      .filter((line: string) => line && line.trim())
+      .map((line: string) => {
+        const startRegex = /start="([\d.]+)"/;
+        const durRegex = /dur="([\d.]+)"/;
+
+        const startMatch = startRegex.exec(line);
+        const durMatch = durRegex.exec(line);
+
+        if (!startMatch || !durMatch) {
+          return null;
+        }
+
+        const start = startMatch[1];
+        const dur = durMatch[1];
+
+        const htmlText = line
+          .replace(/<text.+>/, "")
+          .replace(/&amp;/gi, "&")
+          .replace(/<\/?[^>]+(>|$)/g, "");
+
+        const decodedText = he.decode(htmlText);
+        const text = striptags(decodedText);
+
+        return {
+          start,
+          dur,
+          text,
+        };
+      })
+      .filter(Boolean); // null 값 제거
+
+    return lines;
+  } catch (error) {
+    console.error("자막 추출 중 오류 발생:", error);
+    throw error;
   }
 }

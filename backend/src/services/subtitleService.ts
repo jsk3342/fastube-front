@@ -1,9 +1,9 @@
-import { getSubtitles } from "youtube-captions-scraper";
 import {
   SubtitleItem,
   enhanceSubtitleItems,
   extractVideoID,
   fetchYouTubeVideoInfo,
+  getSubtitlesDirectly,
 } from "../utils/youtubeUtils";
 
 interface VideoInfo {
@@ -60,8 +60,8 @@ export class SubtitleService {
 
       let rawSubtitles;
       try {
-        // YouTube 자막 가져오기
-        rawSubtitles = await getSubtitles({
+        // 직접 구현한 함수를 사용하여 YouTube 자막 가져오기
+        rawSubtitles = await getSubtitlesDirectly({
           videoID: videoId,
           lang: language,
         });
@@ -77,7 +77,7 @@ export class SubtitleService {
         // 요청한 언어가 영어가 아니고, 자막을 찾을 수 없는 경우 영어 자막 시도
         if (language !== "en") {
           console.log("영어 자막으로 대체 시도");
-          rawSubtitles = await getSubtitles({
+          rawSubtitles = await getSubtitlesDirectly({
             videoID: videoId,
             lang: "en",
           });
