@@ -134,17 +134,26 @@ export async function getSubtitlesDirectly({
     const { data } = await axios.get(`https://youtube.com/watch?v=${videoID}`);
 
     // 자막 데이터에 접근할 수 있는지 확인
-    if (!data.includes("captionTracks"))
-      throw new Error(`Could not find captions for video: ${videoID}`);
+    if (!data.includes("captionTracks")) {
+      throw new Error(`이 비디오에는 자막이 없습니다: ${videoID}`);
+    }
 
+    // 더 정확한 정규식 패턴으로 자막 트랙 추출
     const regex = /"captionTracks":(\[.*?\])/;
     const match = regex.exec(data);
 
     if (!match || !match[1]) {
-      throw new Error(`Could not extract caption tracks for video: ${videoID}`);
+      throw new Error(`자막 트랙을 찾을 수 없습니다: ${videoID}`);
     }
 
     const { captionTracks } = JSON.parse(`{"captionTracks":${match[1]}}`);
+
+    // 자막 트랙이 비어있는지 확인
+    if (!captionTracks || captionTracks.length === 0) {
+      throw new Error(`이 비디오에는 자막이 없습니다: ${videoID}`);
+    }
+
+    // 요청한 언어의 자막 찾기 (더 유연한 매칭)
     const subtitle =
       find(captionTracks, {
         vssId: `.${lang}`,
@@ -152,17 +161,20 @@ export async function getSubtitlesDirectly({
       find(captionTracks, {
         vssId: `a.${lang}`,
       }) ||
+      find(captionTracks, {
+        vssId: `a.${lang}.`,
+      }) ||
       find(
         captionTracks,
         ({ vssId }: { vssId: string }) => vssId && vssId.match(`.${lang}`)
       );
 
     // 요청한 언어의 자막이 있는지 확인
-    if (!subtitle || (subtitle && !subtitle.baseUrl))
-      throw new Error(`Could not find ${lang} captions for ${videoID}`);
+    if (!subtitle || (subtitle && !subtitle.baseUrl)) {
+      throw new Error(`이 비디오에는 ${lang} 자막이 없습니다: ${videoID}`);
+    }
 
     const transcriptResponse = await axios.get(subtitle.baseUrl);
-    console.log("transcriptResponse", transcriptResponse.data);
     const transcript = transcriptResponse.data;
 
     const lines = transcript
@@ -199,6 +211,10 @@ export async function getSubtitlesDirectly({
         };
       })
       .filter(Boolean); // null 값 제거
+
+    if (!lines || lines.length === 0) {
+      throw new Error(`자막 내용을 추출할 수 없습니다: ${videoID}`);
+    }
 
     return lines;
   } catch (error) {
