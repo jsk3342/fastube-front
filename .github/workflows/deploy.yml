@@ -11,28 +11,45 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 13.209.41.149 >> ~/.ssh/known_hosts
 
       - name: Deploy to EC2
-        run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 '
-            # 디렉토리 존재 확인 및 생성
+        uses: appleboy/ssh-action@master
+        with:
+          host: 13.209.41.149
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            # Docker 권한 설정 (처음 한번만 필요)
+            if ! groups | grep -q docker; then
+              echo "Docker 그룹에 사용자 추가 중..."
+              sudo usermod -aG docker $USER
+              echo "사용자가 Docker 그룹에 추가되었습니다. 세션 재시작이 필요할 수 있습니다."
+              # 현재 세션에서 그룹 적용
+              newgrp docker
+            fi
+
+            # 디렉토리 생성
             mkdir -p ~/fastube-docker
-            
-            # 코드 클론 또는 풀
+
+            # 리포지토리 클론 또는 업데이트
             if [ ! -d ~/fastube-docker/.git ]; then
-              # 저장소가 없으면 클론
               git clone https://github.com/jsk3342/fastube-front.git ~/fastube-docker
             else
-              # 있으면 풀
               cd ~/fastube-docker && git pull
             fi
-            
+
             # Docker 컨테이너 재시작
             cd ~/fastube-docker
-            docker-compose down
+            docker-compose down || true
             docker-compose up -d --build
-          '
+
+            # 상태 확인
+            docker-compose ps
+            echo "Deployment completed successfully!"
