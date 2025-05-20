@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { type SubtitleItem } from "@/apis/queries/useSubtitles";
+import { VideoInfo } from "@/types";
 
 interface AppState {
   // 다크 모드 관련 상태
@@ -23,21 +24,11 @@ interface AppState {
   setSubtitleItems: (items: SubtitleItem[]) => void;
 
   // 비디오 정보 관련 상태
-  videoId: string;
+  videoId: string | null;
   setVideoId: (id: string) => void;
 
-  videoInfo: {
-    title: string;
-    channelName: string;
-    thumbnailUrl: string;
-    videoId: string;
-  };
-  setVideoInfo: (info: {
-    title: string;
-    channelName: string;
-    thumbnailUrl: string;
-    videoId: string;
-  }) => void;
+  videoInfo: VideoInfo | null;
+  setVideoInfo: (info: VideoInfo) => void;
 
   // 로딩 상태
   isLoading: boolean;
@@ -49,6 +40,14 @@ interface AppState {
 
   // 초기화 함수
   resetState: () => void;
+
+  // 간단한 자막 관련 상태
+  isSimplified: boolean;
+  toggleSimplified: () => void;
+
+  // 모달 관련 상태
+  isModalOpen: boolean;
+  setIsModalOpen: (isOpen: boolean) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -73,15 +72,10 @@ export const useAppStore = create<AppState>((set) => ({
   setSubtitleItems: (items) => set({ subtitleItems: items }),
 
   // 비디오 정보 관련 상태
-  videoId: "",
+  videoId: null,
   setVideoId: (id) => set({ videoId: id }),
 
-  videoInfo: {
-    title: "",
-    channelName: "",
-    thumbnailUrl: "",
-    videoId: "",
-  },
+  videoInfo: null,
   setVideoInfo: (info) => set({ videoInfo: info }),
 
   // 로딩 상태
@@ -98,13 +92,19 @@ export const useAppStore = create<AppState>((set) => ({
       url: "",
       subtitleText: "",
       subtitleItems: [],
-      videoId: "",
-      videoInfo: {
-        title: "",
-        channelName: "",
-        thumbnailUrl: "",
-        videoId: "",
-      },
+      videoId: null,
+      videoInfo: null,
       error: null,
+      isSimplified: false,
+      isModalOpen: false,
     }),
+
+  // 간단한 자막 관련 상태
+  isSimplified: false,
+  toggleSimplified: () =>
+    set((state) => ({ isSimplified: !state.isSimplified })),
+
+  // 모달 관련 상태
+  isModalOpen: false,
+  setIsModalOpen: (isOpen) => set({ isModalOpen: isOpen }),
 }));

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,9 +21,11 @@ const UrlForm = () => {
     setSubtitleItems,
     setVideoId,
     resetState,
+    setLanguage: setGlobalLanguage,
+    language: globalLanguage,
   } = useAppStore();
   const [url, setUrl] = useState<string>("");
-  const [language, setLanguage] = useState<string>("ko");
+  const [language, setLanguage] = useState<string>(globalLanguage);
   const subtitlesMutation = useSubtitles();
 
   const validateYoutubeUrl = (url: string): boolean => {
@@ -78,11 +80,70 @@ const UrlForm = () => {
       } else {
         toast.error("자막을 가져오는데 실패했습니다");
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error:", error);
-      toast.error("자막 추출 중 오류가 발생했습니다");
+
+      // 한국어 자막을 찾을 수 없는 경우 영어 자막으로 시도
+      if (
+        language === "ko" &&
+        error instanceof Error &&
+        error.message &&
+        (error.message.includes("could not find ko captions") ||
+          error.message.includes("자막을 찾을 수 없습니다") ||
+          error.message.includes("한국어 자막"))
+      ) {
+        toast.info("한국어 자막을 찾을 수 없어 영어 자막으로 시도합니다.");
+
+        // 전역 상태의 언어를 영어로 변경
+        setGlobalLanguage("en");
+        // 로컬 상태의 언어도 영어로 변경
+        setLanguage("en");
+
+        // 영어로 재시도
+        try {
+          const result = await subtitlesMutation.mutateAsync({
+            url,
+            language: "en",
+          });
+
+          if (result.success) {
+            // API 호출 성공 시 즉시 전역 상태 업데이트
+            const data = result.data;
+
+            // 비디오 정보 먼저 업데이트 - 의존성 관계를 고려
+            setVideoId(data.videoInfo.videoId);
+            setVideoInfo({
+              title: data.videoInfo.title || "YouTube 비디오",
+              channelName: data.videoInfo.channelName || "채널 이름",
+              thumbnailUrl:
+                data.videoInfo.thumbnailUrl ||
+                `https://img.youtube.com/vi/${data.videoInfo.videoId}/maxresdefault.jpg`,
+              videoId: data.videoInfo.videoId,
+            });
+
+            // 자막 정보 업데이트
+            setSubtitleText(data.fullText);
+            setSubtitleItems(data.subtitles);
+
+            // 성공 메시지
+            toast.success("영어 자막을 성공적으로 가져왔습니다!");
+          } else {
+            toast.error("자막을 가져오는데 실패했습니다");
+          }
+        } catch (secondError) {
+          console.error("영어 자막 시도 에러:", secondError);
+          toast.error("자막 추출 중 오류가 발생했습니다");
+        }
+      } else {
+        toast.error("자막 추출 중 오류가 발생했습니다");
+      }
     }
   };
+
+  // 글로벌 상태가 변경되면 로컬 상태도 동기화
+  useEffect(() => {
+    setLanguage(globalLanguage);
+  }, [globalLanguage]);
 
   const isLoading = subtitlesMutation.isPending;
   const isError = subtitlesMutation.isError;
@@ -106,7 +167,10 @@ const UrlForm = () => {
 
           <Select
             value={language}
-            onValueChange={setLanguage}
+            onValueChange={(value) => {
+              setLanguage(value);
+              setGlobalLanguage(value);
+            }}
             disabled={isLoading}
           >
             <SelectTrigger className="w-full md:w-[180px]">
