@@ -1,8 +1,8 @@
 import axios from "axios";
 
-// API base URL - 빈 문자열로 설정 (엔드포인트에 전체 경로 포함)
+// API base URL을 /api로 설정하여 모든 요청에 /api 프리픽스가 자동으로 추가되도록 함
 export const api = axios.create({
-  baseURL: "",
+  baseURL: "/api",
   timeout: 15000, // 자막 추출에 시간이 걸릴 수 있으므로 타임아웃 여유있게 설정
   headers: {
     "Content-Type": "application/json",

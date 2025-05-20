@@ -1,4 +1,4 @@
 export const ENDPOINTS = {
-  SUBTITLES: "/api/subtitles",
-  VIDEO_INFO: "/api/video/info",
+  SUBTITLES: "/subtitles",
+  VIDEO_INFO: "/video/info",
 };
