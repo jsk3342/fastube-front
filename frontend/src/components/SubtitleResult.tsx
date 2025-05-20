@@ -32,17 +32,6 @@ const SubtitleResult = () => {
       ).length
     : 0;
 
-  // 디버깅 로그
-  useEffect(() => {
-    if (subtitleText) {
-      console.log("SubtitleResult - 자막 상태 변경 감지:", {
-        자막길이: subtitleText.length,
-        videoId,
-        videoTitle: videoInfo.title,
-      });
-    }
-  }, [subtitleText, videoId, videoInfo]);
-
   // 검색어 변경 시 로그 및 텍스트 하이라이팅 적용
   useEffect(() => {
     if (searchQuery) {
@@ -191,12 +180,6 @@ const SubtitleResult = () => {
       return text;
     }
   };
-
-  console.log("SubtitleResult - 렌더링 중:", {
-    자막길이: subtitleText.length,
-    항목수: subtitleItems.length,
-    videoId: videoId,
-  });
 
   return (
     <Card className="p-6 w-full max-w-4xl mx-auto bg-card">

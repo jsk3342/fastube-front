@@ -52,7 +52,7 @@ const UrlForm = () => {
         return;
       }
 
-      const { videoInfo, fullText, subtitles } = result.data;
+      const { videoInfo, text, subtitles } = result.data;
 
       // 비디오 정보 업데이트
       setVideoId(videoInfo.videoId);
@@ -66,7 +66,7 @@ const UrlForm = () => {
       });
 
       // 자막 정보 업데이트
-      setSubtitleText(fullText);
+      setSubtitleText(text);
       setSubtitleItems(subtitles);
 
       // 성공 메시지

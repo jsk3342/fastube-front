@@ -64,3 +64,52 @@ export const enhanceSubtitleItems = (
     };
   });
 };
+
+// YouTube Open Graph 메타데이터를 스크랩하여 비디오 정보 가져오기
+export async function fetchYouTubeVideoInfo(videoId: string) {
+  try {
+    // YouTube 비디오 페이지에서 메타데이터 스크랩
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+    const html = await response.text();
+
+    // 비디오 제목 추출
+    const titleMatch = html.match(/<title>(.*?)<\/title>/);
+    const fullTitle = titleMatch ? titleMatch[1] : `Video ${videoId}`;
+
+    // 비디오 제목에서 채널명 분리 (YouTube 제목 형식: "비디오 제목 - 채널명")
+    let title = fullTitle;
+    let channelName = "YouTube Channel";
+
+    if (fullTitle.includes(" - YouTube")) {
+      title = fullTitle.replace(" - YouTube", "");
+    }
+
+    // 채널명 추출 시도
+    const channelMatch = html.match(/"ownerChannelName":"(.*?)"/);
+    if (channelMatch && channelMatch[1]) {
+      channelName = decodeHtmlEntities(channelMatch[1]);
+    }
+
+    // 더 정확한 제목 추출 시도
+    const videoTitleMatch = html.match(/"title":"(.*?)"/);
+    if (videoTitleMatch && videoTitleMatch[1]) {
+      title = decodeHtmlEntities(videoTitleMatch[1]);
+    }
+
+    return {
+      title,
+      channelName,
+      thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+      videoId,
+    };
+  } catch (error) {
+    console.error("YouTube 비디오 정보 가져오기 실패:", error);
+    // 스크랩 실패 시 기본 정보 반환
+    return {
+      title: `Video ${videoId}`,
+      channelName: "YouTube Channel",
+      thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+      videoId,
+    };
+  }
+}

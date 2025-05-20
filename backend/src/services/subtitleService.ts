@@ -3,6 +3,7 @@ import {
   SubtitleItem,
   enhanceSubtitleItems,
   extractVideoID,
+  fetchYouTubeVideoInfo,
 } from "../utils/youtubeUtils";
 
 interface VideoInfo {
@@ -27,16 +28,21 @@ export interface SubtitleResponse {
 }
 
 export class SubtitleService {
-  // 비디오 정보 가져오기 (실제로는 YouTube API를 사용하는 것이 좋지만, 여기서는 간단히 처리)
+  // 비디오 정보 가져오기
   private async getVideoInfo(videoId: string): Promise<VideoInfo> {
-    // 실제 구현에서는 YouTube Data API를 사용하여 비디오 정보를 가져와야 함
-    // 여기서는 예시로 더미 데이터 반환
-    return {
-      title: `Video ${videoId}`,
-      channelName: "YouTube Channel",
-      thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
-      videoId,
-    };
+    try {
+      // 새로 구현한 함수를 사용하여 실제 YouTube 정보 가져오기
+      return await fetchYouTubeVideoInfo(videoId);
+    } catch (error) {
+      console.error("비디오 정보 가져오기 실패:", error);
+      // 오류 발생 시 기본 정보 반환
+      return {
+        title: `Video ${videoId}`,
+        channelName: "YouTube Channel",
+        thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+        videoId,
+      };
+    }
   }
 
   // YouTube 자막 가져오기

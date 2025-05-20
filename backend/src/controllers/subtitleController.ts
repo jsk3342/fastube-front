@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { validationResult } from "express-validator";
 import { SubtitleService } from "../services/subtitleService";
+import { fetchYouTubeVideoInfo } from "../utils/youtubeUtils";
 
 const subtitleService = new SubtitleService();
 
@@ -53,16 +54,20 @@ export class SubtitleController {
         return;
       }
 
-      // 여기서는 간단한 예시로 더미 데이터 반환
-      // 실제 구현에서는 YouTube Data API를 사용하여 비디오 정보를 가져와야 함
+      // 실제 YouTube 정보 가져오기
+      const videoInfo = await fetchYouTubeVideoInfo(id);
+
+      // 사용 가능한 자막 언어 목록 (실제로는 YouTube API에서 가져와야 함)
+      const availableLanguages = ["ko", "en", "ja", "zh-CN"];
+
       res.status(200).json({
         success: true,
         data: {
-          title: `Video ${id}`,
-          channelName: "YouTube Channel",
-          thumbnailUrl: `https://img.youtube.com/vi/${id}/maxresdefault.jpg`,
-          duration: 300, // 초 단위
-          availableLanguages: ["ko", "en", "ja", "zh-CN"],
+          title: videoInfo.title,
+          channelName: videoInfo.channelName,
+          thumbnailUrl: videoInfo.thumbnailUrl,
+          duration: 300, // 초 단위 (실제로는 YouTube API에서 가져와야 함)
+          availableLanguages,
         },
       });
     } catch (error: any) {

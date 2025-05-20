@@ -20,10 +20,6 @@ const queryClient = new QueryClient({
 const SubtitleSection = () => {
   const { subtitleText } = useAppStore();
 
-  // 디버깅 로그
-  console.log("SubtitleSection - 현재 자막 있음:", !!subtitleText);
-
-  // subtitleText가 있을 때만 SubtitleResult 렌더링
   if (!subtitleText) return null;
 
   return <SubtitleResult />;
