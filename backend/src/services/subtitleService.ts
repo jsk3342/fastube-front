@@ -58,12 +58,37 @@ export class SubtitleService {
         throw new Error("유효하지 않은 YouTube URL입니다.");
       }
 
-      // YouTube 자막 가져오기
-      const rawSubtitles = await getSubtitles({
-        videoID: videoId,
-        lang: language,
-      });
-      console.log("rawSubtitles", rawSubtitles);
+      let rawSubtitles;
+      try {
+        // YouTube 자막 가져오기
+        rawSubtitles = await getSubtitles({
+          videoID: videoId,
+          lang: language,
+        });
+
+        if (!rawSubtitles || rawSubtitles.length === 0) {
+          throw new Error(
+            `요청한 언어(${language})로 자막을 찾을 수 없습니다.`
+          );
+        }
+      } catch (error) {
+        console.error(`${language} 자막 가져오기 실패:`, error);
+
+        // 요청한 언어가 영어가 아니고, 자막을 찾을 수 없는 경우 영어 자막 시도
+        if (language !== "en") {
+          console.log("영어 자막으로 대체 시도");
+          rawSubtitles = await getSubtitles({
+            videoID: videoId,
+            lang: "en",
+          });
+
+          if (!rawSubtitles || rawSubtitles.length === 0) {
+            throw new Error("영어 자막도 찾을 수 없습니다.");
+          }
+        } else {
+          throw error; // 이미 영어 자막을 요청했는데 실패한 경우 그냥 에러 전달
+        }
+      }
 
       // 자막 데이터 강화
       const enhancedSubtitles = enhanceSubtitleItems(rawSubtitles);
