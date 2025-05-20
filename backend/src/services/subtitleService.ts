@@ -54,7 +54,6 @@ export class SubtitleService {
 
       // 비디오 ID 추출
       const videoId = extractVideoID(url);
-      console.log("videoId", videoId);
       if (!videoId) {
         throw new Error("유효하지 않은 YouTube URL입니다.");
       }
@@ -64,6 +63,7 @@ export class SubtitleService {
         videoID: videoId,
         lang: language,
       });
+      console.log("rawSubtitles", rawSubtitles);
 
       // 자막 데이터 강화
       const enhancedSubtitles = enhanceSubtitleItems(rawSubtitles);

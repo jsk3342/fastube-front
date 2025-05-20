@@ -1,9 +1,9 @@
 // YouTube URL에서 videoID를 추출하는 함수
 export function extractVideoID(url: string): string | null {
-  const vMatch = /[?&]v=([a-zA-Z0-9_-]{11})/.exec(url);
+  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
+  const match = url.match(regExp);
 
-  // 추출된 비디오 ID 반환 (없으면 null)
-  return vMatch ? vMatch[1] : null;
+  return match && match[2].length === 11 ? match[2] : null;
 }
 
 // 초 단위를 "00:00" 형식으로 변환하는 함수
