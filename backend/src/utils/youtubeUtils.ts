@@ -2,7 +2,6 @@ import he from "he";
 import axios from "axios";
 import { find } from "lodash";
 import striptags from "striptags";
-import ytdl from "ytdl-core";
 
 // YouTube URL에서 videoID를 추출하는 함수
 export function extractVideoID(url: string): string | null {
@@ -124,74 +123,104 @@ export async function fetchYouTubeVideoInfo(videoId: string) {
  * YouTube 비디오에서 자막을 직접 추출하는 함수
  * 외부 라이브러리 대신 직접 구현한 방식을 사용
  */
-export async function getSubtitlesDirectly(
-  videoId: string,
-  language: string = "ko"
-): Promise<string> {
+export async function getSubtitlesDirectly({
+  videoID,
+  lang = "en",
+}: {
+  videoID: string;
+  lang: string;
+}) {
   try {
-    console.log(
-      `[자막 추출 시작] 비디오 ID: ${videoId}, 요청 언어: ${language}`
-    );
+    console.log(`[자막 추출 시작] 비디오 ID: ${videoID}, 요청 언어: ${lang}`);
 
-    const video = await ytdl.getInfo(videoId);
-    console.log(`[비디오 정보 조회 성공] 제목: ${video.videoDetails.title}`);
+    const { data } = await axios.get(`https://youtube.com/watch?v=${videoID}`);
+    console.log(`[YouTube 페이지 로드 성공] 크기: ${data.length} 바이트`);
 
-    const captions = video.player_response.captions;
-    console.log(
-      `[자막 정보] 사용 가능한 자막 트랙:`,
-      JSON.stringify(
-        captions?.playerCaptionsTracklistRenderer?.captionTracks || []
-      )
-    );
-
-    if (!captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) {
-      console.log(`[자막 없음] 이 비디오에는 자막이 없습니다: ${videoId}`);
-      throw new Error(`이 비디오에는 자막이 없습니다: ${videoId}`);
+    // 자막 데이터에 접근할 수 있는지 확인
+    if (!data.includes("captionTracks")) {
+      console.log(`[자막 없음] captionTracks를 찾을 수 없음: ${videoID}`);
+      throw new Error(`Could not find captions for video: ${videoID}`);
     }
 
-    const captionTrack =
-      captions.playerCaptionsTracklistRenderer.captionTracks.find(
-        (track: any) => track.languageCode === language
-      );
+    const regex = /"captionTracks":(\[.*?\])/;
+    const match = regex.exec(data);
 
-    if (!captionTrack) {
-      console.log(
-        `[자막 없음] ${language} 자막을 찾을 수 없습니다. 영어 자막으로 대체 시도`
-      );
-      const englishTrack =
-        captions.playerCaptionsTracklistRenderer.captionTracks.find(
-          (track: any) => track.languageCode === "en"
-        );
-
-      if (!englishTrack) {
-        console.log(`[자막 없음] 영어 자막도 찾을 수 없습니다.`);
-        throw new Error(
-          `이 비디오에는 ${language} 또는 영어 자막이 없습니다: ${videoId}`
-        );
-      }
-
-      console.log(
-        `[자막 찾음] 영어 자막 트랙 발견:`,
-        JSON.stringify(englishTrack)
-      );
-      const response = await axios.get(englishTrack.baseUrl);
-      console.log(
-        `[자막 다운로드 성공] 영어 자막 크기: ${response.data.length} 바이트`
-      );
-      return response.data;
+    if (!match || !match[1]) {
+      console.log(`[자막 트랙 추출 실패] 정규식 매칭 실패: ${videoID}`);
+      throw new Error(`Could not extract caption tracks for video: ${videoID}`);
     }
 
+    const { captionTracks } = JSON.parse(`{"captionTracks":${match[1]}}`);
     console.log(
-      `[자막 찾음] ${language} 자막 트랙 발견:`,
-      JSON.stringify(captionTrack)
+      `[자막 트랙 발견] 사용 가능한 자막:`,
+      JSON.stringify(captionTracks)
     );
-    const response = await axios.get(captionTrack.baseUrl);
+
+    const subtitle =
+      find(captionTracks, {
+        vssId: `.${lang}`,
+      }) ||
+      find(captionTracks, {
+        vssId: `a.${lang}`,
+      }) ||
+      find(
+        captionTracks,
+        ({ vssId }: { vssId: string }) => vssId && vssId.match(`.${lang}`)
+      );
+
+    // 요청한 언어의 자막이 있는지 확인
+    if (!subtitle || (subtitle && !subtitle.baseUrl)) {
+      console.log(`[자막 없음] ${lang} 자막을 찾을 수 없음: ${videoID}`);
+      throw new Error(`Could not find ${lang} captions for ${videoID}`);
+    }
+
+    console.log(`[자막 URL 발견] ${lang} 자막 URL: ${subtitle.baseUrl}`);
+    const transcriptResponse = await axios.get(subtitle.baseUrl);
     console.log(
-      `[자막 다운로드 성공] ${language} 자막 크기: ${response.data.length} 바이트`
+      `[자막 다운로드 성공] 크기: ${transcriptResponse.data.length} 바이트`
     );
-    return response.data;
+
+    const transcript = transcriptResponse.data;
+
+    const lines = transcript
+      .replace('<?xml version="1.0" encoding="utf-8" ?><transcript>', "")
+      .replace("</transcript>", "")
+      .split("</text>")
+      .filter((line: string) => line && line.trim())
+      .map((line: string) => {
+        const startRegex = /start="([\d.]+)"/;
+        const durRegex = /dur="([\d.]+)"/;
+
+        const startMatch = startRegex.exec(line);
+        const durMatch = durRegex.exec(line);
+
+        if (!startMatch || !durMatch) {
+          return null;
+        }
+
+        const start = startMatch[1];
+        const dur = durMatch[1];
+
+        const htmlText = line
+          .replace(/<text.+>/, "")
+          .replace(/&amp;/gi, "&")
+          .replace(/<\/?[^>]+(>|$)/g, "");
+
+        const decodedText = he.decode(htmlText);
+        const text = striptags(decodedText);
+
+        return {
+          start,
+          dur,
+          text,
+        };
+      })
+      .filter(Boolean); // null 값 제거
+
+    console.log(`[자막 파싱 완료] 총 ${lines.length}개의 자막 라인 추출됨`);
+    return lines;
   } catch (error) {
-    console.error(`[자막 추출 실패] 상세 에러:`, error);
+    console.error("[자막 추출 실패] 상세 에러:", error);
     throw error;
   }
 }
