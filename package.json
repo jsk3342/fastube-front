@@ -4,8 +4,8 @@
   "description": "Youtube subtitles extractor with front and backend",
   "private": true,
   "workspaces": [
-    "fastube-mono/frontend",
-    "fastube-mono/backend"
+    "./frontend",
+    "./backend"
   ],
   "scripts": {
     "start:frontend": "cd ./frontend && npm run dev",
@@ -15,8 +15,8 @@
     "build:backend": "cd ./backend && npm run build",
     "build": "npm run build:frontend && npm run build:backend",
     "install:all": "npm install && npm run install:frontend && npm run install:backend",
-    "install:frontend": "cd fastube-mono/frontend && npm install",
-    "install:backend": "cd fastube-mono/backend && npm install"
+    "install:frontend": "cd ./frontend && npm install",
+    "install:backend": "cd ./backend && npm install"
   },
   "keywords": [
     "youtube",
