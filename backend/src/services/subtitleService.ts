@@ -27,14 +27,14 @@ export interface SubtitleResponse {
 }
 
 export class SubtitleService {
-  private extractVideoId(url: string): string | null {
+  public extractVideoId(url: string): string | null {
     const regExp =
       /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
     const match = url.match(regExp);
     return match && match[2].length === 11 ? match[2] : null;
   }
 
-  private parseSubtitles(xmlData: string): SubtitleItem[] {
+  public parseSubtitles(xmlData: string): SubtitleItem[] {
     const lines = xmlData
       .replace('<?xml version="1.0" encoding="utf-8" ?><transcript>', "")
       .replace("</transcript>", "")
@@ -77,11 +77,11 @@ export class SubtitleService {
     return lines;
   }
 
-  private formatSubtitles(subtitles: SubtitleItem[]): string {
+  public formatSubtitles(subtitles: SubtitleItem[]): string {
     return subtitles.map((item) => item.text).join(" ");
   }
 
-  private async getVideoInfo(videoId: string): Promise<VideoInfo> {
+  public async getVideoInfo(videoId: string): Promise<VideoInfo> {
     try {
       const video = await ytdl.getInfo(videoId);
       return {
@@ -101,7 +101,7 @@ export class SubtitleService {
     }
   }
 
-  async getSubtitlesFromYoutube(
+  public async getSubtitlesFromYoutube(
     videoId: string,
     language: string
   ): Promise<SubtitleItem[]> {
