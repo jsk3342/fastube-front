@@ -81,39 +81,63 @@ const TimelineView = ({
     return item.text.toLowerCase().includes(searchQuery.toLowerCase());
   });
 
-  if (filteredSubtitles.length === 0) {
-    return (
-      <div className="text-center text-muted-foreground py-10">
-        검색 결과가 없습니다
-      </div>
-    );
-  }
-
   return (
-    <>
-      {filteredSubtitles.map((item, index) => (
-        <div
-          key={index}
-          className="p-2 border rounded hover:bg-accent cursor-pointer flex"
-          onClick={() => onTimestampClick(parseFloat(item.start))}
-        >
-          <div className="text-sm font-mono text-blue-500 min-w-[50px]">
-            {item.startFormatted}
+    <div className="min-h-[300px] flex flex-col">
+      {filteredSubtitles.length > 0 ? (
+        // 검색 결과가 있는 경우
+        <>
+          <div className="flex-1">
+            {filteredSubtitles.map((item, index) => (
+              <div
+                key={index}
+                className="p-2 border rounded hover:bg-accent cursor-pointer flex mb-2"
+                onClick={() => onTimestampClick(parseFloat(item.start))}
+              >
+                <div className="text-sm font-mono text-blue-500 min-w-[50px]">
+                  {item.startFormatted}
+                </div>
+                <div className="ml-3">
+                  <HighlightedText text={item.text} query={searchQuery} />
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="ml-3">
-            <HighlightedText text={item.text} query={searchQuery} />
-          </div>
-        </div>
-      ))}
 
-      {searchQuery.trim() !== "" && filteredSubtitles.length > 0 && (
-        <div className="text-right py-2 px-3 border-t">
-          <Badge variant="secondary">
-            {filteredSubtitles.length}/{subtitleItems.length}건 표시됨
-          </Badge>
+          {searchQuery.trim() !== "" && (
+            <div className="text-right py-2 px-3 border-t mt-auto">
+              <Badge variant="secondary">
+                {filteredSubtitles.length}/{subtitleItems.length}건 표시됨
+              </Badge>
+            </div>
+          )}
+        </>
+      ) : (
+        // 검색 결과가 없는 경우
+        <div className="flex flex-col items-center justify-center h-full py-20">
+          <Search className="h-10 w-10 text-muted-foreground mb-4 opacity-20" />
+          <p className="text-muted-foreground text-center">
+            검색 결과가 없습니다
+          </p>
+          <p className="text-muted-foreground text-center text-sm mt-2">
+            다른 검색어로 시도하거나 검색어를 지워보세요
+          </p>
+          {searchQuery.trim() !== "" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-4"
+              onClick={() =>
+                document.dispatchEvent(
+                  new KeyboardEvent("keydown", { key: "Escape" })
+                )
+              }
+            >
+              검색어 지우기
+            </Button>
+          )}
         </div>
       )}
-    </>
+    </div>
   );
 };
 
@@ -135,7 +159,7 @@ const TextView = ({
     <div className="relative">
       {searchQuery.trim() !== "" && highlightedText ? (
         <div
-          className="w-full p-4 border rounded-md bg-background overflow-auto whitespace-pre-wrap subtitle-content"
+          className="min-h-[300px] w-full p-3 border rounded-md bg-background overflow-auto whitespace-pre-wrap transition-all duration-300 ease-in-out animate-in fade-in-50 slide-in-from-top-2"
           dangerouslySetInnerHTML={{ __html: highlightedText }}
         />
       ) : (
@@ -143,7 +167,7 @@ const TextView = ({
           ref={textareaRef as React.RefObject<HTMLTextAreaElement>}
           value={subtitleText}
           readOnly
-          className="w-full resize-none subtitle-content"
+          className="min-h-[300px] w-full transition-all duration-300 ease-in-out"
         />
       )}
       {searchQuery.trim() !== "" && (
@@ -243,6 +267,21 @@ const SubtitleResult = () => {
       setHighlightedText("");
     }
   }, [searchQuery, viewMode, subtitleText]);
+
+  // ESC 키 이벤트 리스너 추가
+  useEffect(() => {
+    const handleGlobalEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSearchQuery("");
+      }
+    };
+
+    document.addEventListener("keydown", handleGlobalEscape);
+
+    return () => {
+      document.removeEventListener("keydown", handleGlobalEscape);
+    };
+  }, []);
 
   // 자막이 없으면 컴포넌트를 렌더링하지 않음
   if (!subtitleText || subtitleText.trim() === "") {
@@ -354,7 +393,7 @@ const SubtitleResult = () => {
         </div>
       </div>
 
-      {/* 자막 내용 뷰 영역 */}
+      {/* 자막 내용 뷰 영역 - 전환 애니메이션 추가 */}
       <div className="transition-all duration-300 ease-in-out">
         {viewMode === "text" ? (
           <TextView
@@ -365,7 +404,7 @@ const SubtitleResult = () => {
             textareaRef={textareaRef}
           />
         ) : (
-          <div className="space-y-2 overflow-y-auto p-2 border rounded-md subtitle-content">
+          <div className="h-[500px] overflow-y-auto p-2 border rounded-md transition-all duration-300">
             <TimelineView
               subtitleItems={subtitleItems}
               searchQuery={searchQuery}
