@@ -14,3 +14,4 @@ declare module "youtube-caption-scraper" {
     options: SubtitleOptions
   ): Promise<SubtitleResult[]>;
 }
+ 

@@ -41,3 +41,4 @@ git push origin main
 - SSH 접속 에러: SSH 키가 올바르게 등록되었는지 확인하세요.
 - Git 클론 에러: 저장소 URL이 올바른지 확인하세요.
 - Docker 명령어 에러: EC2 인스턴스에 Docker가 설치되어 있는지 확인하세요.
+ 

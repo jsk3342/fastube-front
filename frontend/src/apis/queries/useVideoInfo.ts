@@ -35,16 +35,16 @@ export function useVideoInfo(videoUrl: string | null) {
         console.error("비디오 정보 가져오기 실패:", error);
 
         // 에러 발생 시 기본 정보 반환 (폴백)
-        return {
-          success: true,
-          data: {
-            title: "YouTube 비디오",
-            channelName: "채널 이름",
-            thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+      return {
+        success: true,
+        data: {
+          title: "YouTube 비디오",
+          channelName: "채널 이름",
+          thumbnailUrl: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
             duration: 0,
-            availableLanguages: ["ko", "en"],
-          },
-        };
+          availableLanguages: ["ko", "en"],
+        },
+      };
       }
     },
     enabled: !!videoId,
