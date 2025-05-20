@@ -127,89 +127,82 @@ export async function fetchYouTubeVideoInfo(videoId: string) {
  */
 export async function getSubtitlesDirectly(
   videoId: string,
-  language: string = "ko"
+  language: string
 ): Promise<string> {
   try {
     console.log(
       `[DEBUG] 자막 추출 시작 - 비디오 ID: ${videoId}, 언어: ${language}`
     );
-    const video = await ytdl.getInfo(videoId);
-    console.log(
-      `[DEBUG] 비디오 정보 가져오기 성공 - 제목: ${video.videoDetails.title}`
-    );
 
-    const captions = video.player_response.captions;
-    console.log(`[DEBUG] 자막 정보:`, JSON.stringify(captions, null, 2));
+    // 1. 비디오 정보 가져오기
+    const videoInfo = await ytdl.getInfo(videoId);
 
-    if (!captions || !captions.playerCaptionsTracklistRenderer) {
-      console.log(
-        `[DEBUG] 자막 정보가 없음 - captions: ${!!captions}, playerCaptionsTracklistRenderer: ${!!captions?.playerCaptionsTracklistRenderer}`
-      );
-      throw new Error(`이 비디오에는 자막이 없습니다: ${videoId}`);
-    }
-
-    const captionTracks =
-      captions.playerCaptionsTracklistRenderer.captionTracks;
+    // 2. 자막 트랙 찾기
+    const captions =
+      videoInfo.player_response.captions?.playerCaptionsTracklistRenderer
+        ?.captionTracks || [];
     console.log(
       `[DEBUG] 사용 가능한 자막 트랙:`,
-      JSON.stringify(captionTracks, null, 2)
+      captions.map((c) => c.languageCode)
     );
 
-    if (!captionTracks || captionTracks.length === 0) {
+    // 3. 요청된 언어의 자막 찾기
+    let targetCaption = captions.find(
+      (caption) => caption.languageCode === language
+    );
+
+    // 4. 요청된 언어가 없으면 영어 자막으로 대체
+    if (!targetCaption) {
       console.log(
-        `[DEBUG] 자막 트랙이 없음 - captionTracks: ${JSON.stringify(captionTracks)}`
+        `[DEBUG] ${language} 자막을 찾을 수 없어 영어 자막으로 대체합니다.`
       );
-      throw new Error(`이 비디오에는 자막이 없습니다: ${videoId}`);
+      targetCaption = captions.find((caption) => caption.languageCode === "en");
     }
 
-    // 요청된 언어의 자막 찾기
-    let targetTrack = captionTracks.find(
-      (track: any) => track.languageCode === language
-    );
-    console.log(
-      `[DEBUG] 요청된 언어(${language})의 자막 트랙:`,
-      targetTrack ? JSON.stringify(targetTrack) : "없음"
-    );
-
-    // 요청된 언어의 자막이 없으면 영어 자막으로 대체
-    if (!targetTrack) {
-      console.log(`[DEBUG] ${language} 자막이 없어 영어 자막으로 대체 시도`);
-      targetTrack = captionTracks.find(
-        (track: any) => track.languageCode === "en"
-      );
-      console.log(
-        `[DEBUG] 영어 자막 트랙:`,
-        targetTrack ? JSON.stringify(targetTrack) : "없음"
-      );
-    }
-
-    if (!targetTrack) {
-      console.log(
-        `[DEBUG] 대체 자막도 없음 - 사용 가능한 언어: ${captionTracks.map((t: any) => t.languageCode).join(", ")}`
-      );
+    // 5. 자막이 없는 경우
+    if (!targetCaption) {
       throw new Error(
-        `이 비디오에는 ${language} 또는 영어 자막이 없습니다: ${videoId}`
+        `자막을 찾을 수 없습니다. (비디오 ID: ${videoId}, 요청 언어: ${language})`
       );
     }
 
-    console.log(`[DEBUG] 선택된 자막 트랙:`, JSON.stringify(targetTrack));
-    const baseUrl = targetTrack.baseUrl;
-    console.log(`[DEBUG] 자막 URL: ${baseUrl}`);
+    // 6. 자막 URL 생성
+    const baseUrl = targetCaption.baseUrl;
+    if (!baseUrl) {
+      throw new Error("자막 URL을 생성할 수 없습니다.");
+    }
 
-    const response = await axios.get(baseUrl);
-    console.log(
-      `[DEBUG] 자막 데이터 가져오기 성공 - 크기: ${response.data.length} 바이트`
-    );
+    // 7. 자막 데이터 가져오기
+    const response = await axios.get(baseUrl, {
+      headers: {
+        "Accept-Language": language,
+      },
+    });
 
-    const subtitles = response.data;
-    console.log(`[DEBUG] 자막 데이터 샘플:`, subtitles.substring(0, 200));
+    if (!response.data) {
+      throw new Error("자막 데이터를 가져올 수 없습니다.");
+    }
 
-    return subtitles;
+    // 8. XML 파싱 및 텍스트 추출
+    const xmlData = response.data;
+    const textContent = xmlData
+      .match(/<text[^>]*>(.*?)<\/text>/g)
+      ?.map((text: string) => {
+        const content = text.match(/<text[^>]*>(.*?)<\/text>/)?.[1];
+        return content ? decodeHtmlEntities(content) : "";
+      })
+      .join(" ");
+
+    if (!textContent) {
+      throw new Error("자막 텍스트를 추출할 수 없습니다.");
+    }
+
+    return textContent;
   } catch (error) {
-    console.error(`[DEBUG] 자막 추출 중 오류 발생:`, error);
+    console.error("[DEBUG] 자막 추출 중 오류 발생:", error);
     if (error instanceof Error) {
       throw new Error(`자막 추출 실패: ${error.message}`);
     }
-    throw error;
+    throw new Error("알 수 없는 오류가 발생했습니다.");
   }
 }
