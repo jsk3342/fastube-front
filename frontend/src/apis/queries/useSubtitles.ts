@@ -1,14 +1,16 @@
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 import { api } from "../index";
 import { ENDPOINTS } from "../endpoints";
-import type { SubtitleRequest, SubtitleResponse } from "@/types";
 
 export interface SubtitleItem {
+  start: number;
+  dur: number;
   text: string;
-  start: string; // 시작 시간 (초)
-  dur: string; // 지속 시간 (초)
-  startFormatted?: string; // "00:00" 형식 (프론트에서 계산)
-  end?: number; // 종료 시간 (초) (프론트에서 계산)
+}
+
+export interface SubtitleRequest {
+  url: string;
+  language: string;
 }
 
 export interface VideoInfo {
@@ -42,6 +44,15 @@ export function extractVideoID(url: string): string | null {
   }
 
   return null;
+}
+
+export interface SubtitleResponse {
+  success: boolean;
+  data: {
+    subtitles: SubtitleItem[];
+    text: string;
+    videoInfo: VideoInfo;
+  };
 }
 
 /**

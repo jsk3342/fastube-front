@@ -1,8 +1,8 @@
 import axios from "axios";
 
-// API base URL 환경변수 사용 (상대 경로 사용으로 변경)
+// API base URL - 빈 문자열로 설정 (엔드포인트에 전체 경로 포함)
 export const api = axios.create({
-  baseURL: "/api",
+  baseURL: "",
   timeout: 15000, // 자막 추출에 시간이 걸릴 수 있으므로 타임아웃 여유있게 설정
   headers: {
     "Content-Type": "application/json",
