@@ -20,7 +20,7 @@ export interface VideoInfo {
 export interface SubtitleResponse {
   success: boolean;
   data: {
-    fullText: string;
+    text: string;
     subtitles: SubtitleItem[];
     videoInfo: VideoInfo;
   };
