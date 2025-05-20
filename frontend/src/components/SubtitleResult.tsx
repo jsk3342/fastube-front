@@ -129,21 +129,21 @@ const TextView = ({
   searchQuery: string;
   highlightedText: string;
   matchCount: number;
-  textareaRef: React.RefObject<HTMLTextAreaElement>;
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 }) => {
   return (
     <div className="relative">
       {searchQuery.trim() !== "" && highlightedText ? (
         <div
-          className="min-h-[300px] w-full p-3 border rounded-md bg-background overflow-auto whitespace-pre-wrap transition-all duration-300 ease-in-out animate-in fade-in-50 slide-in-from-top-2"
+          className="w-full p-4 border rounded-md bg-background overflow-auto whitespace-pre-wrap subtitle-content"
           dangerouslySetInnerHTML={{ __html: highlightedText }}
         />
       ) : (
         <Textarea
-          ref={textareaRef}
+          ref={textareaRef as React.RefObject<HTMLTextAreaElement>}
           value={subtitleText}
           readOnly
-          className="min-h-[300px] w-full transition-all duration-300 ease-in-out"
+          className="w-full resize-none subtitle-content"
         />
       )}
       {searchQuery.trim() !== "" && (
@@ -355,23 +355,25 @@ const SubtitleResult = () => {
       </div>
 
       {/* 자막 내용 뷰 영역 */}
-      {viewMode === "text" ? (
-        <TextView
-          subtitleText={subtitleText}
-          searchQuery={searchQuery}
-          highlightedText={highlightedText}
-          matchCount={matchCount}
-          textareaRef={textareaRef}
-        />
-      ) : (
-        <div className="space-y-2 max-h-[500px] overflow-y-auto p-2 border rounded-md">
-          <TimelineView
-            subtitleItems={subtitleItems}
+      <div className="transition-all duration-300 ease-in-out">
+        {viewMode === "text" ? (
+          <TextView
+            subtitleText={subtitleText}
             searchQuery={searchQuery}
-            onTimestampClick={handleTimestampClick}
+            highlightedText={highlightedText}
+            matchCount={matchCount}
+            textareaRef={textareaRef}
           />
-        </div>
-      )}
+        ) : (
+          <div className="space-y-2 overflow-y-auto p-2 border rounded-md subtitle-content">
+            <TimelineView
+              subtitleItems={subtitleItems}
+              searchQuery={searchQuery}
+              onTimestampClick={handleTimestampClick}
+            />
+          </div>
+        )}
+      </div>
     </Card>
   );
 };
