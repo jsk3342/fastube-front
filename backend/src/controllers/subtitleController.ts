@@ -3,61 +3,33 @@ import { validationResult } from "express-validator";
 import { SubtitleService } from "../services/subtitleService";
 import { fetchYouTubeVideoInfo } from "../utils/youtubeUtils";
 
+const subtitleService = new SubtitleService();
+
 export class SubtitleController {
-  private subtitleService: SubtitleService;
-
-  constructor() {
-    this.subtitleService = new SubtitleService();
-  }
-
   // YouTube 자막 가져오기
-  async getSubtitles(req: Request, res: Response): Promise<void> {
+  public async getSubtitles(req: Request, res: Response): Promise<void> {
     try {
-      const { url, language = "ko" } = req.body;
-      const videoId = this.subtitleService.extractVideoId(url);
-
-      if (!videoId) {
-        res.status(400).json({
-          success: false,
-          error: "유효하지 않은 YouTube URL입니다.",
-        });
+      // 유효성 검사 오류 확인
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        res.status(400).json({ success: false, errors: errors.array() });
         return;
       }
 
-      try {
-        // 요청된 언어로 자막 가져오기 시도
-        const subtitles = await this.subtitleService.getSubtitlesFromYoutube(
-          videoId,
-          language
-        );
-        res.json({
-          success: true,
-          data: {
-            text: this.subtitleService.formatSubtitles(subtitles),
-            videoInfo: await this.subtitleService.getVideoInfo(videoId),
-          },
-        });
-      } catch (error) {
-        // 요청된 언어로 실패하면 영어 자막으로 대체
-        console.log("영어 자막으로 대체 시도");
-        const englishSubtitles =
-          await this.subtitleService.getSubtitlesFromYoutube(videoId, "en");
-        res.json({
-          success: true,
-          data: {
-            text: this.subtitleService.formatSubtitles(englishSubtitles),
-            videoInfo: await this.subtitleService.getVideoInfo(videoId),
-          },
-        });
-      }
-    } catch (error) {
+      const { url, language } = req.body;
+
+      // 서비스 호출
+      const result = await subtitleService.getSubtitlesFromYoutube({
+        url,
+        language,
+      });
+
+      res.status(200).json(result);
+    } catch (error: any) {
       console.error("자막 컨트롤러 오류:", error);
       res.status(500).json({
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "자막을 가져오는 중 오류가 발생했습니다.",
+        message: error.message || "자막을 가져오는 중 오류가 발생했습니다.",
       });
     }
   }

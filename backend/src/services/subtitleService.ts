@@ -1,9 +1,10 @@
-import { Request, Response } from "express";
-import { getSubtitlesDirectly } from "../utils/youtubeUtils";
-import { SubtitleItem } from "../types/subtitle";
-import he from "he";
-import striptags from "striptags";
-import ytdl from "ytdl-core";
+import {
+  SubtitleItem,
+  enhanceSubtitleItems,
+  extractVideoID,
+  fetchYouTubeVideoInfo,
+  getSubtitlesDirectly,
+} from "../utils/youtubeUtils";
 
 interface VideoInfo {
   title: string;
@@ -27,71 +28,14 @@ export interface SubtitleResponse {
 }
 
 export class SubtitleService {
-  public extractVideoId(url: string): string | null {
-    const regExp =
-      /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-    const match = url.match(regExp);
-    return match && match[2].length === 11 ? match[2] : null;
-  }
-
-  public parseSubtitles(xmlData: string): SubtitleItem[] {
-    const lines = xmlData
-      .replace('<?xml version="1.0" encoding="utf-8" ?><transcript>', "")
-      .replace("</transcript>", "")
-      .split("</text>")
-      .filter((line) => line && line.trim())
-      .map((line) => {
-        const startRegex = /start="([\d.]+)"/;
-        const durRegex = /dur="([\d.]+)"/;
-
-        const startMatch = startRegex.exec(line);
-        const durMatch = durRegex.exec(line);
-
-        if (!startMatch || !durMatch) {
-          return null;
-        }
-
-        const start = startMatch[1];
-        const dur = durMatch[1];
-
-        const htmlText = line
-          .replace(/<text.+>/, "")
-          .replace(/&amp;/gi, "&")
-          .replace(/<\/?[^>]+(>|$)/g, "");
-
-        const decodedText = he.decode(htmlText);
-        const text = striptags(decodedText);
-
-        return {
-          start,
-          dur,
-          text,
-        };
-      })
-      .filter(Boolean) as SubtitleItem[];
-
-    if (!lines || lines.length === 0) {
-      throw new Error("자막 내용을 추출할 수 없습니다.");
-    }
-
-    return lines;
-  }
-
-  public formatSubtitles(subtitles: SubtitleItem[]): string {
-    return subtitles.map((item) => item.text).join(" ");
-  }
-
-  public async getVideoInfo(videoId: string): Promise<VideoInfo> {
+  // 비디오 정보 가져오기
+  private async getVideoInfo(videoId: string): Promise<VideoInfo> {
     try {
-      const video = await ytdl.getInfo(videoId);
-      return {
-        title: video.videoDetails.title,
-        channelName: video.videoDetails.author.name,
-        thumbnailUrl: video.videoDetails.thumbnails[0].url,
-        videoId,
-      };
+      // 새로 구현한 함수를 사용하여 실제 YouTube 정보 가져오기
+      return await fetchYouTubeVideoInfo(videoId);
     } catch (error) {
       console.error("비디오 정보 가져오기 실패:", error);
+      // 오류 발생 시 기본 정보 반환
       return {
         title: `Video ${videoId}`,
         channelName: "YouTube Channel",
@@ -101,66 +45,71 @@ export class SubtitleService {
     }
   }
 
+  // YouTube 자막 가져오기
   public async getSubtitlesFromYoutube(
-    videoId: string,
-    language: string
-  ): Promise<SubtitleItem[]> {
+    params: SubtitleRequest
+  ): Promise<SubtitleResponse> {
     try {
-      console.log(`${language} 자막 가져오기 시도`);
-      const subtitles = await getSubtitlesDirectly(videoId, language);
-      return this.parseSubtitles(subtitles);
-    } catch (error) {
-      console.error(`${language} 자막 가져오기 실패:`, error);
-      throw error;
-    }
-  }
+      const { url, language = "en" } = params;
 
-  async getSubtitles(req: Request, res: Response) {
-    try {
-      const { url, language = "ko" } = req.body;
-      const videoId = this.extractVideoId(url);
-
+      // 비디오 ID 추출
+      const videoId = extractVideoID(url);
       if (!videoId) {
-        return res.status(400).json({
-          success: false,
-          error: "유효하지 않은 YouTube URL입니다.",
-        });
+        throw new Error("유효하지 않은 YouTube URL입니다.");
       }
 
+      let rawSubtitles;
       try {
-        // 요청된 언어로 자막 가져오기 시도
-        const subtitles = await this.getSubtitlesFromYoutube(videoId, language);
-        return res.json({
-          success: true,
-          data: {
-            text: this.formatSubtitles(subtitles),
-            videoInfo: await this.getVideoInfo(videoId),
-          },
+        // 직접 구현한 함수를 사용하여 YouTube 자막 가져오기
+        rawSubtitles = await getSubtitlesDirectly({
+          videoID: videoId,
+          lang: language,
         });
+
+        if (!rawSubtitles || rawSubtitles.length === 0) {
+          throw new Error(
+            `요청한 언어(${language})로 자막을 찾을 수 없습니다.`
+          );
+        }
       } catch (error) {
-        // 요청된 언어로 실패하면 영어 자막으로 대체
-        console.log("영어 자막으로 대체 시도");
-        const englishSubtitles = await this.getSubtitlesFromYoutube(
-          videoId,
-          "en"
-        );
-        return res.json({
-          success: true,
-          data: {
-            text: this.formatSubtitles(englishSubtitles),
-            videoInfo: await this.getVideoInfo(videoId),
-          },
-        });
+        console.error(`${language} 자막 가져오기 실패:`, error);
+
+        // 요청한 언어가 영어가 아니고, 자막을 찾을 수 없는 경우 영어 자막 시도
+        if (language !== "en") {
+          console.log("영어 자막으로 대체 시도");
+          rawSubtitles = await getSubtitlesDirectly({
+            videoID: videoId,
+            lang: "en",
+          });
+
+          if (!rawSubtitles || rawSubtitles.length === 0) {
+            throw new Error("영어 자막도 찾을 수 없습니다.");
+          }
+        } else {
+          throw error; // 이미 영어 자막을 요청했는데 실패한 경우 그냥 에러 전달
+        }
       }
+
+      // 자막 데이터 강화
+      const enhancedSubtitles = enhanceSubtitleItems(rawSubtitles);
+
+      // 전체 텍스트 추출
+      const fullText = enhancedSubtitles.map((item) => item.text).join(" ");
+
+      // 비디오 정보 가져오기
+      const videoInfo = await this.getVideoInfo(videoId);
+
+      return {
+        success: true,
+        data: {
+          subtitles: enhancedSubtitles,
+          text: fullText,
+          videoInfo: videoInfo,
+        },
+      };
     } catch (error) {
-      console.error("자막 컨트롤러 오류:", error);
-      return res.status(500).json({
-        success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "자막을 가져오는 중 오류가 발생했습니다.",
-      });
+      console.error("자막 가져오기 실패:", error);
+      throw error;
     }
   }
 }
