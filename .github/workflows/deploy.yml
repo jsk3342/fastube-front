@@ -16,23 +16,28 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Deploy to EC2
+      - name: Create deploy directory
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'mkdir -p ~/fastube-docker'
+
+      - name: Check if repository exists
+        id: check_repo
         run: |
-          ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 '
-            # 디렉토리 존재 확인 및 생성
-            mkdir -p ~/fastube-docker
-            
-            # 코드 클론 또는 풀
-            if [ ! -d ~/fastube-docker/.git ]; then
-              # 저장소가 없으면 클론
-              git clone https://github.com/jsk3342/fastube-front.git ~/fastube-docker
-            else
-              # 있으면 풀
-              cd ~/fastube-docker && git pull
-            fi
-            
-            # Docker 컨테이너 재시작
-            cd ~/fastube-docker
-            docker-compose down
-            docker-compose up -d --build
-          '
+          REPO_EXISTS=$(ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 '[ -d ~/fastube-docker/.git ] && echo "true" || echo "false"')
+          echo "repo_exists=$REPO_EXISTS" >> $GITHUB_OUTPUT
+
+      - name: Clone repository if not exists
+        if: steps.check_repo.outputs.repo_exists == 'false'
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'git clone https://github.com/jsk3342/fastube-front.git ~/fastube-docker'
+
+      - name: Pull latest changes if repo exists
+        if: steps.check_repo.outputs.repo_exists == 'true'
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && git pull'
+
+      - name: Stop running containers
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose down'
+
+      - name: Start containers with latest changes
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose up -d --build'
+
+      - name: Check container status
+        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose ps'
