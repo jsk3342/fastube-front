@@ -11,16 +11,17 @@ export class SubtitleController {
   }
 
   // YouTube 자막 가져오기
-  async getSubtitles(req: Request, res: Response): Promise<Response> {
+  async getSubtitles(req: Request, res: Response): Promise<void> {
     try {
       const { url, language = "ko" } = req.body;
       const videoId = this.subtitleService.extractVideoId(url);
 
       if (!videoId) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           error: "유효하지 않은 YouTube URL입니다.",
         });
+        return;
       }
 
       try {
@@ -29,7 +30,7 @@ export class SubtitleController {
           videoId,
           language
         );
-        return res.json({
+        res.json({
           success: true,
           data: {
             text: this.subtitleService.formatSubtitles(subtitles),
@@ -41,7 +42,7 @@ export class SubtitleController {
         console.log("영어 자막으로 대체 시도");
         const englishSubtitles =
           await this.subtitleService.getSubtitlesFromYoutube(videoId, "en");
-        return res.json({
+        res.json({
           success: true,
           data: {
             text: this.subtitleService.formatSubtitles(englishSubtitles),
@@ -51,7 +52,7 @@ export class SubtitleController {
       }
     } catch (error) {
       console.error("자막 컨트롤러 오류:", error);
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
         error:
           error instanceof Error
