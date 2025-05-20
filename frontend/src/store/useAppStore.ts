@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { type SubtitleItem, type VideoInfo } from "@/apis/queries/useSubtitles";
+import type { SubtitleItem, VideoInfo } from "@/types";
 
 interface AppState {
   // 다크 모드 관련 상태

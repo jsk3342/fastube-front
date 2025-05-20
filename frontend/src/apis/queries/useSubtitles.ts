@@ -1,12 +1,7 @@
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 import { api } from "../index";
 import { ENDPOINTS } from "../endpoints";
-import type {
-  SubtitleItem,
-  SubtitleRequest,
-  SubtitleResponse,
-  VideoInfo,
-} from "@/types";
+import type { SubtitleRequest, SubtitleResponse } from "@/types";
 
 /**
  * YouTube URL에서 비디오 ID를 추출합니다.
