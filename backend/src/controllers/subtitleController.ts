@@ -11,7 +11,7 @@ export class SubtitleController {
   }
 
   // YouTube 자막 가져오기
-  public async getSubtitles(req: Request, res: Response): Promise<void> {
+  async getSubtitles(req: Request, res: Response): Promise<Response> {
     try {
       const { url, language = "ko" } = req.body;
       const videoId = this.subtitleService.extractVideoId(url);
