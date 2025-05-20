@@ -11,33 +11,35 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: Create deploy directory
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'mkdir -p ~/fastube-docker'
-
-      - name: Check if repository exists
-        id: check_repo
+      - name: Setup SSH key
         run: |
-          REPO_EXISTS=$(ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 '[ -d ~/fastube-docker/.git ] && echo "true" || echo "false"')
-          echo "repo_exists=$REPO_EXISTS" >> $GITHUB_OUTPUT
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 13.209.41.149 >> ~/.ssh/known_hosts
 
-      - name: Clone repository if not exists
-        if: steps.check_repo.outputs.repo_exists == 'false'
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'git clone https://github.com/jsk3342/fastube-front.git ~/fastube-docker'
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: 13.209.41.149
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # 디렉토리 생성
+            mkdir -p ~/fastube-docker
 
-      - name: Pull latest changes if repo exists
-        if: steps.check_repo.outputs.repo_exists == 'true'
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && git pull'
+            # 리포지토리 클론 또는 업데이트
+            if [ ! -d ~/fastube-docker/.git ]; then
+              git clone https://github.com/jsk3342/fastube-front.git ~/fastube-docker
+            else
+              cd ~/fastube-docker && git pull
+            fi
 
-      - name: Stop running containers
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose down'
+            # Docker 컨테이너 재시작
+            cd ~/fastube-docker
+            docker-compose down
+            docker-compose up -d --build
 
-      - name: Start containers with latest changes
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose up -d --build'
-
-      - name: Check container status
-        run: ssh -o StrictHostKeyChecking=no ubuntu@13.209.41.149 'cd ~/fastube-docker && docker-compose ps'
+            # 상태 확인
+            docker-compose ps
+            echo "Deployment completed successfully!"
