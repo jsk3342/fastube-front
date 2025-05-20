@@ -11,14 +11,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: Setup known hosts
-        run: ssh-keyscan -H 13.209.41.149 >> ~/.ssh/known_hosts
-
       - name: Deploy to EC2
         uses: appleboy/ssh-action@master
         with:
