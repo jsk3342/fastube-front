@@ -17,15 +17,12 @@ export class SubtitleController {
       }
 
       const { url, language } = req.body;
-      console.log("url", url);
-      console.log("language", language);
 
       // 서비스 호출
       const result = await subtitleService.getSubtitlesFromYoutube({
         url,
         language,
       });
-      console.log("result", result);
 
       res.status(200).json(result);
     } catch (error: any) {

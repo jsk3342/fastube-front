@@ -50,10 +50,11 @@ export class SubtitleService {
     params: SubtitleRequest
   ): Promise<SubtitleResponse> {
     try {
-      const { url, language } = params;
+      const { url, language = "en" } = params;
 
       // 비디오 ID 추출
       const videoId = extractVideoID(url);
+      console.log("videoId", videoId);
       if (!videoId) {
         throw new Error("유효하지 않은 YouTube URL입니다.");
       }
@@ -61,7 +62,7 @@ export class SubtitleService {
       // YouTube 자막 가져오기
       const rawSubtitles = await getSubtitles({
         videoID: videoId,
-        lang: language || "ko",
+        lang: language,
       });
 
       // 자막 데이터 강화
