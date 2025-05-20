@@ -1,5 +1,4 @@
 import {
-  SubtitleItem,
   enhanceSubtitleItems,
   extractVideoID,
   fetchYouTubeVideoInfo,
@@ -79,7 +78,12 @@ export class SubtitleService {
             success: true,
             data: {
               text: response.data.text,
-              videoInfo: response.data.videoInfo,
+              videoInfo: response.data.videoInfo || {
+                title: "",
+                channelName: "",
+                thumbnailUrl: "",
+                videoId,
+              },
             },
           };
         }
@@ -102,7 +106,12 @@ export class SubtitleService {
               success: true,
               data: {
                 text: response.data.text,
-                videoInfo: response.data.videoInfo,
+                videoInfo: response.data.videoInfo || {
+                  title: "",
+                  channelName: "",
+                  thumbnailUrl: "",
+                  videoId,
+                },
               },
             };
           }
