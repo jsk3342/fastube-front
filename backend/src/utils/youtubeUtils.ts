@@ -162,6 +162,7 @@ export async function getSubtitlesDirectly({
       throw new Error(`Could not find ${lang} captions for ${videoID}`);
 
     const transcriptResponse = await axios.get(subtitle.baseUrl);
+    console.log("transcriptResponse", transcriptResponse.data);
     const transcript = transcriptResponse.data;
 
     const lines = transcript
