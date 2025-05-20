@@ -1,24 +1,12 @@
 import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 import { api } from "../index";
 import { ENDPOINTS } from "../endpoints";
-
-export interface SubtitleItem {
-  start: number;
-  dur: number;
-  text: string;
-}
-
-export interface SubtitleRequest {
-  url: string;
-  language: string;
-}
-
-export interface VideoInfo {
-  title: string;
-  channelName: string;
-  thumbnailUrl: string;
-  videoId: string;
-}
+import type {
+  SubtitleItem,
+  SubtitleRequest,
+  SubtitleResponse,
+  VideoInfo,
+} from "@/types";
 
 /**
  * YouTube URL에서 비디오 ID를 추출합니다.
@@ -44,15 +32,6 @@ export function extractVideoID(url: string): string | null {
   }
 
   return null;
-}
-
-export interface SubtitleResponse {
-  success: boolean;
-  data: {
-    subtitles: SubtitleItem[];
-    text: string;
-    videoInfo: VideoInfo;
-  };
 }
 
 /**

@@ -14,7 +14,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
-import { type SubtitleItem } from "@/apis/queries/useSubtitles";
+import type { SubtitleItem } from "@/types";
 
 // 자막 검색 결과 강조 처리를 위한 컴포넌트
 const HighlightedText = ({ text, query }: { text: string; query: string }) => {
