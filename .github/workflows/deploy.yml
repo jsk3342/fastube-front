@@ -17,7 +17,6 @@ jobs:
           host: 13.209.41.149
           username: ubuntu
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
           script: |
             # Docker 권한 설정 (처음 한번만 필요)
             if ! groups | grep -q docker; then
