@@ -1,4 +1,4 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, type UseMutationOptions } from "@tanstack/react-query";
 import { api } from "../index";
 import { ENDPOINTS } from "../endpoints";
 import type { SubtitleRequest, SubtitleResponse } from "@/types";
@@ -47,7 +47,12 @@ export function extractVideoID(url: string): string | null {
 /**
  * 자막 추출 API를 호출하는 커스텀 훅
  */
-export function useSubtitles() {
+export function useSubtitles(
+  options?: Omit<
+    UseMutationOptions<SubtitleResponse, Error, SubtitleRequest>,
+    "mutationFn"
+  >
+) {
   return useMutation<SubtitleResponse, Error, SubtitleRequest>({
     mutationFn: async (params) => {
       const { data } = await api.post<SubtitleResponse>(
@@ -56,5 +61,6 @@ export function useSubtitles() {
       );
       return data;
     },
+    ...options,
   });
 }
