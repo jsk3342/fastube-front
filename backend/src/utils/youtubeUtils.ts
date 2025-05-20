@@ -2,6 +2,7 @@ import he from "he";
 import axios from "axios";
 import { find } from "lodash";
 import striptags from "striptags";
+// @ts-ignore
 import ytdl from "ytdl-core";
 
 // YouTube URL에서 videoID를 추출하는 함수
@@ -163,7 +164,7 @@ export async function getSubtitlesDirectly(
 
     // 요청된 언어의 자막 찾기
     let targetTrack = captionTracks.find(
-      (track) => track.languageCode === language
+      (track: any) => track.languageCode === language
     );
     console.log(
       `[DEBUG] 요청된 언어(${language})의 자막 트랙:`,
@@ -173,7 +174,9 @@ export async function getSubtitlesDirectly(
     // 요청된 언어의 자막이 없으면 영어 자막으로 대체
     if (!targetTrack) {
       console.log(`[DEBUG] ${language} 자막이 없어 영어 자막으로 대체 시도`);
-      targetTrack = captionTracks.find((track) => track.languageCode === "en");
+      targetTrack = captionTracks.find(
+        (track: any) => track.languageCode === "en"
+      );
       console.log(
         `[DEBUG] 영어 자막 트랙:`,
         targetTrack ? JSON.stringify(targetTrack) : "없음"
@@ -182,7 +185,7 @@ export async function getSubtitlesDirectly(
 
     if (!targetTrack) {
       console.log(
-        `[DEBUG] 대체 자막도 없음 - 사용 가능한 언어: ${captionTracks.map((t) => t.languageCode).join(", ")}`
+        `[DEBUG] 대체 자막도 없음 - 사용 가능한 언어: ${captionTracks.map((t: any) => t.languageCode).join(", ")}`
       );
       throw new Error(
         `이 비디오에는 ${language} 또는 영어 자막이 없습니다: ${videoId}`
