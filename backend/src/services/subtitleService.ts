@@ -27,6 +27,12 @@ export interface SubtitleResponse {
   };
 }
 
+interface SubtitleItem {
+  text: string;
+  start: number;
+  duration: number;
+}
+
 export class SubtitleService {
   // 비디오 정보 가져오기
   private async getVideoInfo(videoId: string): Promise<VideoInfo> {
@@ -58,57 +64,58 @@ export class SubtitleService {
         throw new Error("유효하지 않은 YouTube URL입니다.");
       }
 
-      let rawSubtitles;
-      try {
-        // 직접 구현한 함수를 사용하여 YouTube 자막 가져오기
-        rawSubtitles = await getSubtitlesDirectly({
-          videoID: videoId,
-          lang: language,
-        });
+      console.log(
+        `[SubtitleService] 자막 추출 시작 - 비디오 ID: ${videoId}, 언어: ${language}`
+      );
 
-        if (!rawSubtitles || rawSubtitles.length === 0) {
-          throw new Error(
-            `요청한 언어(${language})로 자막을 찾을 수 없습니다.`
-          );
+      // 1. 요청한 언어로 자막 가져오기 시도
+      try {
+        console.log(`[SubtitleService] ${language} 자막 가져오기 시도`);
+        const response = await getSubtitlesDirectly(videoId, language);
+
+        if (response.success && response.data.text) {
+          console.log(`[SubtitleService] ${language} 자막 가져오기 성공`);
+          return {
+            success: true,
+            data: {
+              text: response.data.text,
+              videoInfo: response.data.videoInfo,
+            },
+          };
         }
       } catch (error) {
-        console.error(`${language} 자막 가져오기 실패:`, error);
+        console.error(
+          `[SubtitleService] ${language} 자막 가져오기 실패:`,
+          error
+        );
+      }
 
-        // 요청한 언어가 영어가 아니고, 자막을 찾을 수 없는 경우 영어 자막 시도
-        if (language !== "en") {
-          console.log("영어 자막으로 대체 시도");
-          rawSubtitles = await getSubtitlesDirectly({
-            videoID: videoId,
-            lang: "en",
-          });
+      // 2. 영어 자막으로 대체 시도
+      if (language !== "en") {
+        try {
+          console.log("[SubtitleService] 영어 자막으로 대체 시도");
+          const response = await getSubtitlesDirectly(videoId, "en");
 
-          if (!rawSubtitles || rawSubtitles.length === 0) {
-            throw new Error("영어 자막도 찾을 수 없습니다.");
+          if (response.success && response.data.text) {
+            console.log("[SubtitleService] 영어 자막 가져오기 성공");
+            return {
+              success: true,
+              data: {
+                text: response.data.text,
+                videoInfo: response.data.videoInfo,
+              },
+            };
           }
-        } else {
-          throw error; // 이미 영어 자막을 요청했는데 실패한 경우 그냥 에러 전달
+        } catch (error) {
+          console.error("[SubtitleService] 영어 자막 가져오기 실패:", error);
         }
       }
 
-      // 자막 데이터 강화
-      const enhancedSubtitles = enhanceSubtitleItems(rawSubtitles);
-
-      // 전체 텍스트 추출
-      const fullText = enhancedSubtitles.map((item) => item.text).join(" ");
-
-      // 비디오 정보 가져오기
-      const videoInfo = await this.getVideoInfo(videoId);
-
-      return {
-        success: true,
-        data: {
-          subtitles: enhancedSubtitles,
-          text: fullText,
-          videoInfo: videoInfo,
-        },
-      };
+      // 3. 모든 시도 실패
+      console.error("[SubtitleService] 모든 자막 가져오기 시도 실패");
+      throw new Error(`Could not find captions for video: ${videoId}`);
     } catch (error) {
-      console.error("자막 가져오기 실패:", error);
+      console.error("[SubtitleService] 자막 추출 중 오류 발생:", error);
       throw error;
     }
   }
