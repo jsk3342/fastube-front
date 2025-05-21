@@ -23,7 +23,7 @@ const subtitleController = new SubtitleController();
  *               url:
  *                 type: string
  *                 description: YouTube 영상 URL
- *                 example: "https://www.youtube.com/watch?v=e4iWEeJ5MvQ&t=19s"
+ *                 example: "https://www.youtube.com/watch?v=eATWip-H0WQ"
  *               language:
  *                 type: string
  *                 description: "자막 언어 코드"
