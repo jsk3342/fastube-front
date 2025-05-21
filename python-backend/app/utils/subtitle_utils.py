@@ -17,9 +17,10 @@ class SubtitleItem(TypedDict):
 def format_time(seconds: float) -> str:
     """초 단위를 "00:00" 형식으로 변환합니다."""
     try:
-        total_seconds = float(seconds)
-        mins = int(total_seconds // 60)
-        secs = int(total_seconds % 60)
+        # 초를 정수로 변환 후 계산하여 정확한 시간 포맷팅
+        total_seconds = int(float(seconds))
+        mins = total_seconds // 60
+        secs = total_seconds % 60
         return f"{mins:02d}:{secs:02d}"
     except (ValueError, TypeError):
         return "00:00"
@@ -172,10 +173,8 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
         start = float(item.get("start", 0))
         dur = float(item.get("duration", 2))  # 기본 지속 시간 2초
         
-        # 시간을 "00:00" 형식으로 정확히 포맷팅
-        minutes = int(start // 60)
-        seconds = int(start % 60)
-        start_formatted = f"{minutes:02d}:{seconds:02d}"
+        # 시간을 "00:00" 형식으로 정확히 포맷팅 (format_time 함수 사용)
+        start_formatted = format_time(start)
         
         # 텍스트 내 HTML 엔티티 디코딩 및 정리
         text = decode_html_entities(item.get("text", "")).strip()
@@ -184,7 +183,7 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
         if not text:
             continue
         
-        # SubtitleItem 생성
+        # SubtitleItem 생성 - 모든 필수 필드 포함
         subtitle_item = {
             "text": text,
             "start": str(start),
