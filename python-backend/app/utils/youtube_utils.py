@@ -40,8 +40,8 @@ min_request_interval = 5  # 초 단위
 USE_BROWSER_FIRST = False  # Playwright 브라우저를 우선적으로 사용
 USE_BROWSER_FALLBACK = True  # yt-dlp 실패 시 Playwright 폴백 사용 여부
 USE_YTDLP_COOKIES = True  # yt-dlp에 쿠키 사용 여부
-# 컨테이너 환경에서는 Tor 기본 비활성화
-USE_TOR_NETWORK = False if RUNNING_IN_CONTAINER else True  # Tor 네트워크 사용 활성화
+# Tor 네트워크는 기본적으로 활성화 (컨테이너 환경에서도 동일하게)
+USE_TOR_NETWORK = True  # Tor 네트워크 사용 활성화
 TOR_PROXY = "socks5://127.0.0.1:9050"  # Tor 프록시 주소 (기본값)
 USE_PROXIES = False if RUNNING_IN_CONTAINER else True  # 프록시 사용 여부 - 컨테이너에서는 비활성화
 
@@ -528,7 +528,8 @@ def setup_yt_auth(use_auth=False):
 async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=False) -> Tuple[bool, Dict[str, Any]]:
     """
     지정된 언어로 YouTube 비디오의 자막을 가져옵니다.
-    성능 향상을 위해 YouTube Transcript API만 사용하며, 시도 횟수를 최소화합니다.
+    성능 향상을 위해 우선적으로 YouTube Transcript API를 사용하고,
+    실패하면 Tor 네트워크를 통한 yt-dlp 방식을 시도합니다.
     """
     global last_request_time
     
@@ -557,7 +558,7 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
     except Exception as e:
         logger.error(f"비디오 정보 가져오기 예외 발생: {str(e)}, 기본 정보 사용")
     
-    # 최적화: YouTube Transcript API만 사용
+    # 추출 방법: 1) YouTube Transcript API, 2) yt-dlp + Tor
     extraction_methods = [
         {
             "name": "YouTube Transcript API",
@@ -566,9 +567,17 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
         }
     ]
     
+    # 필요시 Tor 네트워크를 통한 yt-dlp 방식 추가
+    if USE_TOR_NETWORK:
+        extraction_methods.append({
+            "name": "yt-dlp + Tor",
+            "func": _run_ytdlp_async,
+            "args": [video_id, language, video_info, 1]  # 최대 1회 시도
+        })
+    
     errors = {}
     
-    # 한 번만 시도
+    # 각 방법 시도
     for method in extraction_methods:
         method_name = method["name"]
         func = method["func"]
@@ -582,18 +591,18 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
                 try:
                     # 비동기 함수 실행
                     func_task = asyncio.create_task(func(*args))
-                    success, result = await asyncio.wait_for(func_task, timeout=5.0)
+                    success, result = await asyncio.wait_for(func_task, timeout=8.0)  # 타임아웃 8초로 증가
                 except asyncio.TimeoutError:
-                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (5초)")
+                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (8초)")
                     errors[method_name] = "Execution timeout"
                     continue
             else:
                 # 동기 함수 실행
                 try:
                     func_result = await asyncio.to_thread(func, *args)
-                    success, result = await asyncio.wait_for(asyncio.sleep(0, result=func_result), timeout=5.0)
+                    success, result = await asyncio.wait_for(asyncio.sleep(0, result=func_result), timeout=8.0)
                 except asyncio.TimeoutError:
-                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (5초)")
+                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (8초)")
                     errors[method_name] = "Execution timeout"
                     continue
                 
@@ -625,8 +634,12 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
                 logger.warning(f"방법 '{method_name}' 실패: {error_msg}")
                 errors[method_name] = error_msg
                 
-                # 비디오에 자막이 없는 경우 사용 가능한 언어 목록 반환
-                if 'availableLanguages' in result:
+                # 비디오에 자막이 없는 경우 사용 가능한 언어 목록 반환 (첫 번째 방법 실패 시에만)
+                if 'availableLanguages' in result and method_name == "YouTube Transcript API":
+                    # 다음 방법이 있으면 계속 진행
+                    if len(extraction_methods) > 1:
+                        continue
+                    
                     return False, {
                         "success": False,
                         "message": f"요청한 언어({language})의 자막을 찾을 수 없습니다.",
@@ -2576,17 +2589,18 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
 def init_tools():
     """
     필요한 도구와 서비스를 초기화합니다.
-    컨테이너 환경에서는 일부 기능을 비활성화합니다.
+    컨테이너 환경에서는 일부 기능을 비활성화하지만 Tor는 활성화합니다.
     """
     global USE_TOR_NETWORK
     
     # 컨테이너 환경에서는 리소스 사용량을 최소화
     if RUNNING_IN_CONTAINER:
-        logger.info("컨테이너 환경 감지: 리소스 사용 최적화 모드로 실행합니다.")
+        logger.info("컨테이너 환경 감지: 리소스 최적화 모드로 실행합니다 (Tor 네트워크 유지)")
         global USE_BROWSER_FIRST, USE_PROXIES
         USE_BROWSER_FIRST = False  # 브라우저 방식 비활성화
         USE_PROXIES = False  # 프록시 비활성화
-        USE_TOR_NETWORK = False  # Tor 네트워크 비활성화
+        # Tor 네트워크는 활성화 상태 유지 (기본값: True)
+        USE_TOR_NETWORK = True  # 컨테이너에서도 Tor 네트워크 사용
     
     # 토르 네트워크 연결 테스트 (활성화된 경우만)
     if USE_TOR_NETWORK:
