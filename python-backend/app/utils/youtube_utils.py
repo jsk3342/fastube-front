@@ -3,7 +3,7 @@ YouTube 자막 추출 및 비디오 정보 가져오기 유틸리티 함수
 """
 import re
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Set, Union
 import yt_dlp
 import random
 import time
@@ -14,6 +14,11 @@ import requests
 from bs4 import BeautifulSoup
 from youtube_transcript_api import YouTubeTranscriptApi, _errors
 import asyncio
+import aiohttp
+from playwright.async_api import async_playwright
+import io
+import tempfile
+import subprocess
 
 # 로깅 설정
 logging.basicConfig(
@@ -265,41 +270,80 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
         'videoId': video_id
     }
     
-    # 0단계: YouTube Transcript API로 먼저 시도 (가장 안정적인 방법)
-    try:
-        logger.info("YouTube Transcript API로 자막 추출 시도")
-        success, result = extract_subtitles_with_transcript_api(video_id, language, video_info)
-        if success:
-            return success, result
-        else:
-            logger.warning("YouTube Transcript API 실패, 다음 방법으로 진행")
-    except Exception as e:
-        logger.error(f"YouTube Transcript API 시도 중 오류 발생: {str(e)}, 다음 방법으로 진행")
+    # 시도 순서는 성공 가능성이 높은 것부터 차례로
+    extraction_methods = [
+        # 새로운 방법: undetected_chromedriver (가장 효과적인 봇 감지 회피)
+        {
+            "name": "undetected_chromedriver",
+            "func": extract_subtitles_with_undetected_chrome,
+            "args": [video_id, language, video_info],
+            "condition": UNDETECTED_CHROME_AVAILABLE  # 설치된 경우에만 실행
+        },
+        # 1단계: YouTube Transcript API
+        {
+            "name": "YouTube Transcript API",
+            "func": extract_subtitles_with_transcript_api,
+            "args": [video_id, language, video_info]
+        },
+        # 2단계: 외부 API 방식 시도
+        {
+            "name": "외부 API 서비스",
+            "func": extract_subtitles_with_external_api,
+            "args": [video_id, language, video_info]
+        },
+        # 3단계: 웹 스크래핑 방식 시도
+        {
+            "name": "웹 스크래핑",
+            "func": extract_subtitles_with_scraping,
+            "args": [video_id, language, video_info]
+        },
+        # 4단계: 브라우저 방식 시도 (설정에 따라)
+        {
+            "name": "브라우저 자동화",
+            "func": extract_subtitles_with_browser,
+            "args": [video_id, language, video_info],
+            "condition": USE_BROWSER_FIRST  # 환경설정에 따라 실행 여부 결정
+        },
+        # 5단계: yt-dlp로 시도 (마지막 수단)
+        {
+            "name": "yt-dlp",
+            "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
+            "args": []
+        }
+    ]
     
-    # 1단계: 웹 스크래핑 방식으로 시도 (두번째로 안정적인 방법)
-    try:
-        logger.info("웹 스크래핑 방식으로 자막 추출 시도")
-        success, result = await extract_subtitles_with_scraping(video_id, language, video_info)
-        if success:
-            return success, result
-        else:
-            logger.warning("웹 스크래핑 방식 실패, 다음 방법으로 진행")
-    except Exception as e:
-        logger.error(f"웹 스크래핑 시도 중 오류 발생: {str(e)}, 다음 방법으로 진행")
-    
-    # 2단계: 브라우저 방식을 세번째로 시도 (설정에 따라)
-    if USE_BROWSER_FIRST:
+    # 각 방법 순차적으로 시도
+    for method in extraction_methods:
+        # 조건부 실행 (있는 경우만 확인)
+        if "condition" in method and not method["condition"]:
+            continue
+            
+        logger.info(f"{method['name']} 방식으로 자막 추출 시도")
+        
         try:
-            logger.info("브라우저 방식으로 자막 추출 시도")
-            success, result = await extract_subtitles_with_browser(video_id, language, video_info)
+            success, result = await method["func"](*method["args"])
             if success:
+                logger.info(f"{method['name']} 방식으로 자막 추출 성공")
                 return success, result
             else:
-                logger.warning("브라우저 방식 실패, yt-dlp 방식으로 폴백")
+                logger.warning(f"{method['name']} 방식 실패, 다음 방법으로 진행")
         except Exception as e:
-            logger.error(f"브라우저 방식 시도 중 오류 발생: {str(e)}, yt-dlp 방식으로 폴백")
+            logger.error(f"{method['name']} 시도 중 오류 발생: {str(e)}, 다음 방법으로 진행")
     
-    # 2단계: yt-dlp로 시도
+    # 모든 방법 실패
+    logger.error(f"모든 방법으로 자막 추출 실패: {video_id}")
+    
+    # 요청 시간 업데이트
+    last_request_time = time.time()
+    return False, {
+        'success': False,
+        'message': "Failed to extract subtitles after trying all methods"
+    }
+
+async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, Any], max_retries: int = 3) -> Tuple[bool, Dict[str, Any]]:
+    """
+    yt-dlp를 비동기로 실행하는 래퍼 함수
+    """
     for attempt in range(max_retries):
         try:
             # 요청마다 다른 브라우저 지문 사용
@@ -317,7 +361,7 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
                         f.write(create_youtube_cookies())
             
             # 인증 설정 추가
-            auth_opts = setup_yt_auth(use_auth)
+            auth_opts = setup_yt_auth(False)
             
             # 다운로드 옵션 설정 (자막 중심)
             ydl_opts = get_ytdlp_base_options(video_id, language, user_agent, http_headers, cookie_file)
@@ -372,8 +416,6 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
                     'message': error_msg
                 }
     
-    # 요청 시간 업데이트
-    last_request_time = time.time()
     return False, {
         'success': False,
         'message': "Maximum retries exceeded"
@@ -434,276 +476,307 @@ def _run_ytdlp(video_id: str, ydl_opts: Dict[str, Any], language: str, video_inf
 
 async def extract_subtitles_with_browser(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     """
-    Playwright를 사용하여 브라우저로 유튜브 자막을 추출합니다.
-    이 방법은 봇 감지를 효과적으로 우회할 수 있습니다.
+    브라우저를 사용해 YouTube 자막을 추출합니다.
     """
     logger.info(f"브라우저 방식으로 자막 추출 시작: {video_id}, 언어: {language}")
     
     try:
-        # 필요한 모듈 임포트 (필요시 설치)
-        try:
-            from playwright.async_api import async_playwright
-        except ImportError:
-            logger.error("Playwright가 설치되지 않았습니다. 'pip install playwright'로 설치한 후 'playwright install' 명령을 실행하세요.")
-            return False, {
-                'success': False, 
-                'message': "Playwright is not installed. Install with 'pip install playwright' and run 'playwright install'"
-            }
-        
-        # 쿠키 저장 경로
-        cookie_dir = Path("./browser_data")
-        cookie_dir.mkdir(exist_ok=True)
-        cookie_file = cookie_dir / f"youtube_cookies_{random.randint(1, 10)}.json"
-        
         async with async_playwright() as p:
-            # 브라우저 시작 (헤드리스 모드)
-            # 프로덕션 환경에서는 headless=True로 설정
-            browser = await p.chromium.launch(headless=True)
+            # 브라우저 시작 (특정 환경에서는 headless=False 사용)
+            # 클라우드 환경에서는 headless=True만 지원할 수 있으므로 조건부로 설정
+            use_headless = True  # 서버 환경 기본값
             
-            # 브라우저 컨텍스트 생성 (사용자 에이전트 및 뷰포트 설정)
-            user_agent = get_random_browser_fingerprint()
-            context = await browser.new_context(
-                user_agent=user_agent,
-                viewport={'width': random.randint(1024, 1920), 'height': random.randint(768, 1080)},
+            # 더 자연스러운 브라우저 설정
+            browser_args = [
+                '--disable-blink-features=AutomationControlled',  # 자동화 감지 비활성화
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-default-apps',
+                '--no-sandbox',
+                '--disable-translate',
+                '--disable-notifications',
+                '--window-size=1920,1080',  # 일반적인 화면 크기
+                f'--user-agent={get_random_browser_fingerprint()}'  # 랜덤 UA 설정
+            ]
+            
+            browser = await p.chromium.launch(
+                headless=use_headless, 
+                args=browser_args, 
+                slow_mo=random.randint(50, 150),  # 브라우저 작업 속도 무작위화
+                downloads_path="/tmp/playwright_downloads"
             )
             
-            # 저장된 쿠키 불러오기 (있는 경우)
-            if cookie_file.exists():
-                try:
-                    with open(cookie_file, 'r') as f:
-                        cookies = json.load(f)
-                    await context.add_cookies(cookies)
-                    logger.info(f"저장된 쿠키 불러오기 성공: {cookie_file}")
-                except Exception as e:
-                    logger.warning(f"쿠키 로드 실패: {str(e)}")
+            # 브라우저 컨텍스트 생성 (고급 설정)
+            context = await browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                locale='ko-KR',  # 한국어 설정
+                timezone_id='Asia/Seoul',  # 서울 시간대
+                geolocation={'latitude': 37.5665, 'longitude': 126.9780},  # 서울 위치
+                permissions=['geolocation'],
+                java_script_enabled=True,
+                user_agent=get_random_browser_fingerprint(),
+                http_credentials={'username': 'user', 'password': 'pass'} if random.random() < 0.3 else None,  # 가끔 인증 정보 사용
+                accept_downloads=True
+            )
             
-            # 새 페이지 열기
+            # YouTube 쿠키 로드
+            await load_youtube_cookies(context)
+            
+            # 새 페이지 생성
             page = await context.new_page()
             
-            # 유튜브 접속 전 랜덤 사이트 방문 (더 자연스러운 행동 시뮬레이션)
-            if random.random() > 0.7:  # 30% 확률로 실행
-                referral_sites = ['https://www.google.com', 'https://search.naver.com', 'https://www.bing.com']
-                await page.goto(random.choice(referral_sites), wait_until='networkidle')
-                logger.info("자연스러운 행동 시뮬레이션: 검색 엔진 방문")
-                await asyncio.sleep(random.uniform(1, 3))
-                
-                # 검색창에 검색어 입력 (구글 기준)
-                search_terms = ['youtube video', '유튜브 영상', 'how to', 'music video']
-                search_term = f"{random.choice(search_terms)} {video_id}"
-                try:
-                    await page.fill('input[name="q"]', search_term)
-                    await page.press('input[name="q"]', 'Enter')
-                    await asyncio.sleep(random.uniform(2, 4))
-                    logger.info(f"검색어 입력: {search_term}")
-                except Exception as e:
-                    logger.warning(f"검색 시도 실패 (무시): {str(e)}")
+            # 인간 행동 시뮬레이션
+            await set_human_behavior(page)
             
-            # 유튜브 영상 페이지로 이동
+            # 비디오 페이지 접속
             video_url = f"https://www.youtube.com/watch?v={video_id}"
-            await page.goto(video_url, wait_until='networkidle')
-            logger.info(f"유튜브 영상 페이지 접속: {video_url}")
+            logger.info(f"브라우저로 페이지 접속: {video_url}")
             
-            # 페이지 로딩 대기
+            # 페이지 로딩
+            await page.goto(video_url, wait_until="networkidle", timeout=30000)
+            
+            # 랜덤 시간 대기 (인간처럼 행동)
             await asyncio.sleep(random.uniform(2, 5))
             
-            # 인간 행동 시뮬레이션
-            await simulate_human_behavior(page)
-            
-            # 자막 버튼 클릭
+            # 자막 버튼 클릭 시도
             try:
-                # 자막 버튼 찾고 클릭
-                logger.info("자막 버튼 찾기 시도...")
-                caption_button = page.locator('.ytp-subtitles-button')
-                
-                # 자막 버튼이 활성화되어 있지 않으면 클릭
+                caption_button = page.locator(".ytp-subtitles-button")
                 if await caption_button.is_visible():
-                    logger.info("자막 버튼 발견, 클릭 시도...")
                     await caption_button.click()
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                else:
-                    logger.warning("자막 버튼을 찾을 수 없음")
+                    await asyncio.sleep(1)
+                    
+                    # 자막 설정 버튼
+                    settings_button = page.locator(".ytp-settings-button")
+                    if await settings_button.is_visible():
+                        await settings_button.click()
+                        await asyncio.sleep(0.5)
+                        
+                        # 자막 메뉴 찾기
+                        subtitles_menu = page.locator("div.ytp-panel-menu [role='menuitem']").nth(1)
+                        if await subtitles_menu.is_visible():
+                            await subtitles_menu.click()
+                            await asyncio.sleep(0.5)
+                            
+                            # 언어 선택 시도
+                            lang_menu_items = page.locator("div.ytp-panel-menu [role='menuitem']")
+                            
+                            # 언어 메뉴 항목 수 확인
+                            count = await lang_menu_items.count()
+                            for i in range(count):
+                                item = lang_menu_items.nth(i)
+                                item_text = await item.text_content()
+                                if language in item_text.lower() or "korean" in item_text.lower():
+                                    await item.click()
+                                    break
             except Exception as e:
                 logger.warning(f"자막 버튼 클릭 실패: {str(e)}")
             
-            # 자막 설정 메뉴 열기
+            # 일부 스크롤
+            await page.mouse.wheel(0, random.randint(300, 700))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            
+            # 동영상 재생 시작
             try:
-                # 설정 버튼 클릭
-                logger.info("설정 버튼 찾기...")
-                settings_button = page.locator('.ytp-settings-button')
-                if await settings_button.is_visible():
-                    await settings_button.click()
-                    await asyncio.sleep(random.uniform(0.5, 1.5))
-                    
-                    # 자막 메뉴 항목 찾기
-                    subtitles_menu = page.locator('text=자막')
-                    if not await subtitles_menu.is_visible():
-                        subtitles_menu = page.locator('text=Subtitles/CC')
-                    
-                    if await subtitles_menu.is_visible():
-                        await subtitles_menu.click()
-                        await asyncio.sleep(random.uniform(0.5, 1.5))
-                        
-                        # 언어 선택 (여러 가능한 형식 시도)
-                        language_names = {
-                            'ko': ['한국어', 'Korean'],
-                            'en': ['영어', 'English'],
-                            'ja': ['일본어', 'Japanese'],
-                            'zh': ['중국어', 'Chinese']
-                        }
-                        
-                        lang_options = language_names.get(language, [language])
-                        for lang_name in lang_options:
-                            try:
-                                lang_selector = page.locator(f'text={lang_name}')
-                                if await lang_selector.is_visible():
-                                    await lang_selector.click()
-                                    logger.info(f"언어 선택 성공: {lang_name}")
-                                    break
-                            except:
-                                continue
-                else:
-                    logger.warning("설정 버튼을 찾을 수 없음")
+                play_button = page.locator(".ytp-play-button")
+                if await play_button.is_visible():
+                    await play_button.click()
+                    await asyncio.sleep(3)  # 비디오 시작 대기
             except Exception as e:
-                logger.warning(f"자막 설정 메뉴 조작 실패: {str(e)}")
+                logger.warning(f"재생 버튼 클릭 실패: {str(e)}")
             
-            # 페이지 스크롤 및 추가 상호작용
-            await page.mouse.wheel(0, random.randint(100, 300))
-            await asyncio.sleep(random.uniform(1, 3))
-            
-            # 자막 텍스트 추출 (JavaScript 평가)
-            subtitle_text = ""
-            try:
-                logger.info("자막 텍스트 추출 시도...")
-                
-                # 방법 1: 현재 표시된 자막 요소 추출
-                subtitles_js = """
-                () => {
-                    const captionElements = document.querySelectorAll('.ytp-caption-segment');
-                    if (captionElements && captionElements.length > 0) {
-                        return Array.from(captionElements).map(el => el.textContent).join(' ');
+            # 페이지에서 자막 추출 시도
+            subtitle_script = """
+            () => {
+                try {
+                    // 자막 컨테이너 찾기
+                    const captionWindow = document.querySelector('.ytp-caption-window-container');
+                    if (captionWindow) {
+                        return Array.from(captionWindow.querySelectorAll('.captions-text')).map(el => el.textContent).join('\\n');
                     }
-                    return '';
+                    
+                    // ytInitialPlayerResponse에서 자막 데이터 찾기
+                    let ytInitialData = null;
+                    for (const script of document.querySelectorAll('script')) {
+                        if (script.textContent.includes('ytInitialPlayerResponse')) {
+                            const match = script.textContent.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+                            if (match) {
+                                ytInitialData = JSON.parse(match[1]);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (ytInitialData && ytInitialData.captions) {
+                        return JSON.stringify(ytInitialData.captions);
+                    }
+                    
+                    return "자막 데이터를 찾을 수 없습니다.";
+                } catch (e) {
+                    return "자막 추출 중 오류: " + e.toString();
                 }
-                """
-                current_caption = await page.evaluate(subtitles_js)
-                if current_caption:
-                    subtitle_text += current_caption + "\n"
-                
-                # 방법 2: 비디오 재생하며 자막 수집
-                # 영상 10% 지점부터 시작
-                video_length_js = "() => { return document.querySelector('video').duration; }"
-                video_length = await page.evaluate(video_length_js) or 0
-                
-                if video_length > 0:
-                    # 영상 전체 길이의 10% 지점에서 시작
-                    start_time = min(video_length * 0.1, 30)  # 최대 30초
-                    # 최대 3분까지만 수집 (혹은 영상 끝까지)
-                    end_time = min(start_time + 180, video_length)
-                    
-                    # 특정 지점으로 이동
-                    seek_js = f"() => {{ document.querySelector('video').currentTime = {start_time}; }}"
-                    await page.evaluate(seek_js)
-                    await asyncio.sleep(1)  # 영상 로딩 대기
-                    
-                    # 영상 재생
-                    play_js = "() => { document.querySelector('video').play(); }"
-                    await page.evaluate(play_js)
-                    logger.info(f"영상 재생 시작 (자막 수집): {start_time}초부터")
-                    
-                    # 일정 간격으로 자막 수집
-                    collected_captions = set()
-                    collection_start_time = time.time()
-                    
-                    # 최대 30초 동안 자막 수집 (또는 end_time에 도달할 때까지)
-                    while time.time() - collection_start_time < 30:
-                        current_caption = await page.evaluate(subtitles_js)
-                        if current_caption and current_caption not in collected_captions:
-                            collected_captions.add(current_caption)
-                            subtitle_text += current_caption + "\n"
-                        
-                        # 현재 재생 위치 확인
-                        current_time_js = "() => { return document.querySelector('video').currentTime; }"
-                        current_time = await page.evaluate(current_time_js) or 0
-                        
-                        # end_time에 도달하면 중단
-                        if current_time >= end_time:
-                            break
-                        
-                        await asyncio.sleep(0.5)
-                
-                # 수집된 자막이 없거나 매우 짧은 경우 YouTube 트랜스크립트 기능 시도
-                if len(subtitle_text.strip()) < 50:
-                    logger.info("재생 방식으로 충분한 자막을 얻지 못해 트랜스크립트 기능 시도...")
-                    
-                    # 트랜스크립트 버튼 찾기 및 클릭
-                    try:
-                        # 첫 번째: 페이지를 새로고침하고 다시 시도
-                        await page.reload(wait_until='networkidle')
-                        await asyncio.sleep(3)
-                        
-                        # '...' 버튼 클릭
-                        more_actions = page.locator('[aria-label="추가 작업"]')
-                        if not await more_actions.is_visible():
-                            more_actions = page.locator('[aria-label="More actions"]')
-                        
-                        if await more_actions.is_visible():
-                            await more_actions.click()
-                            await asyncio.sleep(1)
-                            
-                            # '스크립트 표시' 또는 'Show transcript' 옵션 찾기
-                            transcript_option = page.locator('text=스크립트 표시')
-                            if not await transcript_option.is_visible():
-                                transcript_option = page.locator('text=Show transcript')
-                            
-                            if await transcript_option.is_visible():
-                                await transcript_option.click()
-                                await asyncio.sleep(2)
-                                
-                                # 트랜스크립트 항목 추출
-                                transcript_items_js = """
-                                () => {
-                                    const items = document.querySelectorAll('yt-formatted-string.segment-text');
-                                    return Array.from(items).map(el => el.textContent).join('\\n');
-                                }
-                                """
-                                transcript_text = await page.evaluate(transcript_items_js)
-                                if transcript_text:
-                                    subtitle_text = transcript_text
-                    except Exception as e:
-                        logger.warning(f"트랜스크립트 추출 실패: {str(e)}")
-            except Exception as e:
-                logger.error(f"자막 텍스트 추출 실패: {str(e)}")
+            }
+            """
             
-            # 쿠키 저장 (다음 실행 시 사용)
+            # 스크립트 실행하여 자막 추출
+            subtitle_data = await page.evaluate(subtitle_script)
+            
+            # 제목과 채널 이름 추출
+            title = await page.title()
+            channel_name = "Unknown Channel"
             try:
-                cookies = await context.cookies()
-                with open(cookie_file, 'w') as f:
-                    json.dump(cookies, f)
-                logger.info(f"쿠키 저장 완료: {cookie_file}")
-            except Exception as e:
-                logger.warning(f"쿠키 저장 실패: {str(e)}")
-            
-            # 브라우저 종료
-            await browser.close()
-            
-            # 자막이 추출되었는지 확인
-            if subtitle_text.strip():
-                logger.info(f"브라우저 방식으로 자막 추출 성공: {len(subtitle_text)} 자")
+                channel_elem = page.locator('#owner #channel-name a')
+                if await channel_elem.is_visible():
+                    channel_name = await channel_elem.text_content()
+            except:
+                pass
+                
+            # 추출된 데이터 확인
+            if subtitle_data and subtitle_data != "자막 데이터를 찾을 수 없습니다." and subtitle_data != "자막 추출 중 오류":
+                # 쿠키 저장
+                await save_youtube_cookies(context)
+                
+                # 브라우저 닫기
+                await browser.close()
+                
+                # 비디오 정보 업데이트
+                if title:
+                    video_info["title"] = title.replace(" - YouTube", "")
+                if channel_name:
+                    video_info["channelName"] = channel_name.strip()
+                
+                logger.info(f"브라우저 방식으로 자막 추출 성공: {video_id}")
                 return True, {
                     'success': True,
                     'data': {
-                        'text': subtitle_text.strip(),
-                        'subtitles': [],  # 호환성을 위한 빈 배열
+                        'text': subtitle_data,
+                        'subtitles': [],
                         'videoInfo': video_info
                     }
                 }
-            else:
-                logger.error(f"브라우저 방식으로도 자막을 찾을 수 없음: {video_id}")
-                return False, {
-                    'success': False,
-                    'message': f"Could not find captions for video: {video_id} (Browser method failed)"
+            
+            # YouTube에서 ytInitialPlayerResponse 추출
+            player_script = """
+            () => {
+                try {
+                    let result = { found: false, data: null };
+                    
+                    // ytInitialPlayerResponse 탐색
+                    for (const script of document.querySelectorAll('script')) {
+                        if (script.textContent.includes('ytInitialPlayerResponse')) {
+                            const match = script.textContent.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+                            if (match) {
+                                result.found = true;
+                                result.data = JSON.parse(match[1]);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (!result.found) {
+                        // 다른 방법으로 시도
+                        if (window.ytInitialPlayerResponse) {
+                            result.found = true;
+                            result.data = window.ytInitialPlayerResponse;
+                        }
+                    }
+                    
+                    return result;
+                } catch (e) {
+                    return { found: false, error: e.toString() };
                 }
-    
+            }
+            """
+            
+            player_data = await page.evaluate(player_script)
+            
+            # 쿠키 저장
+            await save_youtube_cookies(context)
+            
+            # 브라우저 닫기
+            await browser.close()
+            
+            if player_data.get('found') and player_data.get('data'):
+                player_json = player_data.get('data')
+                
+                # 비디오 정보 업데이트
+                if 'videoDetails' in player_json:
+                    video_details = player_json['videoDetails']
+                    if 'title' in video_details:
+                        video_info['title'] = video_details['title']
+                    if 'author' in video_details:
+                        video_info['channelName'] = video_details['author']
+                    if 'thumbnail' in video_details and 'thumbnails' in video_details['thumbnail']:
+                        thumbnails = video_details['thumbnail']['thumbnails']
+                        if thumbnails and len(thumbnails) > 0:
+                            video_info['thumbnailUrl'] = thumbnails[-1]['url']
+                
+                # 자막 데이터 탐색
+                if 'captions' in player_json and 'playerCaptionsTracklistRenderer' in player_json['captions']:
+                    captions_renderer = player_json['captions']['playerCaptionsTracklistRenderer']
+                    if 'captionTracks' in captions_renderer:
+                        caption_tracks = captions_renderer['captionTracks']
+                        
+                        selected_track = None
+                        # 원하는 언어의 자막 트랙 찾기
+                        for track in caption_tracks:
+                            track_lang = track.get('languageCode', '')
+                            if language.lower() in track_lang.lower():
+                                selected_track = track
+                                break
+                        
+                        # 영어 자막을 대안으로 사용
+                        if not selected_track:
+                            for track in caption_tracks:
+                                track_lang = track.get('languageCode', '')
+                                if 'en' in track_lang.lower():
+                                    selected_track = track
+                                    break
+                        
+                        # 첫 번째 트랙을 최후의 방법으로 사용
+                        if not selected_track and caption_tracks:
+                            selected_track = caption_tracks[0]
+                        
+                        if selected_track and 'baseUrl' in selected_track:
+                            base_url = selected_track['baseUrl']
+                            logger.info(f"자막 URL 발견: {base_url}")
+                            
+                            # 비동기 HTTP 요청으로 자막 데이터 가져오기
+                            async with aiohttp.ClientSession() as session:
+                                try:
+                                    # URL에 format=json3 추가
+                                    caption_url = f"{base_url}&fmt=json3"
+                                    async with session.get(caption_url, timeout=10) as response:
+                                        if response.status == 200:
+                                            caption_json = await response.json()
+                                            
+                                            # JSON 형식 자막을 텍스트로 변환
+                                            subtitle_text = ""
+                                            if 'events' in caption_json:
+                                                for event in caption_json['events']:
+                                                    if 'segs' in event:
+                                                        for seg in event['segs']:
+                                                            if 'utf8' in seg:
+                                                                subtitle_text += seg['utf8'] + " "
+                                                        subtitle_text += "\n"
+                                            
+                                            if subtitle_text:
+                                                logger.info(f"브라우저 방식으로 자막 추출 성공: {video_id}")
+                                                return True, {
+                                                    'success': True,
+                                                    'data': {
+                                                        'text': subtitle_text,
+                                                        'subtitles': [],
+                                                        'videoInfo': video_info
+                                                    }
+                                                }
+                                except Exception as e:
+                                    logger.error(f"자막 데이터 요청 중 오류: {str(e)}")
+            
+            logger.warning(f"브라우저 방식으로 자막을 찾을 수 없음: {video_id}")
+            return False, {
+                'success': False,
+                'message': f"Could not find captions for video: {video_id} (browser method)"
+            }
     except Exception as e:
         logger.error(f"브라우저 자막 추출 과정에서 오류 발생: {str(e)}")
         return False, {
@@ -711,50 +784,55 @@ async def extract_subtitles_with_browser(video_id: str, language: str, video_inf
             'message': f"Error in browser caption extraction: {str(e)}"
         }
 
-async def simulate_human_behavior(page):
+async def set_human_behavior(page):
     """
-    실제 사람처럼 브라우저를 조작하는 행동을 시뮬레이션합니다.
+    페이지에서 인간같은 행동을 시뮬레이션합니다.
     """
-    # 랜덤 위치로 마우스 이동
-    await page.mouse.move(
-        random.randint(100, 800), 
-        random.randint(100, 600)
-    )
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    # 랜덤 마우스 움직임
+    for _ in range(random.randint(2, 5)):
+        x = random.randint(100, 800)
+        y = random.randint(100, 600)
+        await page.mouse.move(x, y)
+        await asyncio.sleep(random.uniform(0.1, 0.3))
     
-    # 스크롤
-    for _ in range(random.randint(1, 3)):
-        await page.mouse.wheel(0, random.randint(100, 300))
-        await asyncio.sleep(random.uniform(0.5, 2))
+    # 가끔 키보드 입력
+    if random.random() < 0.3:
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(random.uniform(0.2, 0.5))
     
-    # 비디오 영역 클릭 (재생/일시정지)
+    # 가끔 브라우저 창 크기 변경
+    if random.random() < 0.2:
+        width = random.randint(1024, 1920)
+        height = random.randint(768, 1080)
+        await page.set_viewport_size({"width": width, "height": height})
+        await asyncio.sleep(random.uniform(0.3, 0.7))
+
+async def load_youtube_cookies(context):
+    """
+    저장된 YouTube 쿠키를 로드합니다.
+    """
     try:
-        video_player = page.locator('.html5-video-player')
-        if await video_player.is_visible():
-            # 비디오 플레이어의 중앙 부분 좌표 계산
-            bounding_box = await video_player.bounding_box()
-            if bounding_box:
-                center_x = bounding_box['x'] + bounding_box['width'] / 2
-                center_y = bounding_box['y'] + bounding_box['height'] / 2
-                await page.mouse.move(center_x, center_y)
-                await page.mouse.click(center_x, center_y)
-                await asyncio.sleep(random.uniform(1, 3))
+        # 쿠키 파일 존재 여부 확인
+        cookie_file = "youtube_cookies.json"
+        if os.path.exists(cookie_file):
+            with open(cookie_file, "r") as f:
+                cookies = json.load(f)
+                await context.add_cookies(cookies)
+                logger.info("YouTube 쿠키 로드 성공")
     except Exception as e:
-        logger.warning(f"비디오 플레이어 클릭 실패 (무시): {str(e)}")
-    
-    # 비디오 타임라인에서 랜덤 위치 클릭 (앞쪽 30%로 제한)
+        logger.warning(f"YouTube 쿠키 로드 실패: {str(e)}")
+
+async def save_youtube_cookies(context):
+    """
+    현재 YouTube 쿠키를 저장합니다.
+    """
     try:
-        video_timeline = page.locator('.ytp-progress-bar')
-        if await video_timeline.is_visible():
-            bounding_box = await video_timeline.bounding_box()
-            if bounding_box:
-                timeline_x = bounding_box['x'] + bounding_box['width'] * random.uniform(0.05, 0.3)
-                timeline_y = bounding_box['y'] + bounding_box['height'] / 2
-                await page.mouse.move(timeline_x, timeline_y)
-                await page.mouse.click(timeline_x, timeline_y)
-                await asyncio.sleep(random.uniform(1, 2))
+        cookies = await context.cookies("https://www.youtube.com")
+        with open("youtube_cookies.json", "w") as f:
+            json.dump(cookies, f)
+            logger.info("YouTube 쿠키 저장 성공")
     except Exception as e:
-        logger.warning(f"타임라인 클릭 실패 (무시): {str(e)}")
+        logger.warning(f"YouTube 쿠키 저장 실패: {str(e)}")
 
 def extract_subtitle_text(info: Dict[str, Any], language: str) -> str:
     """
@@ -1226,44 +1304,36 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
     """
     yt-dlp 기본 옵션을 설정합니다.
     """
-    # 기본 옵션
-    ydl_opts = {
-        'skip_download': True,  # 비디오는 다운로드하지 않음
-        'writesubtitles': True,  # 자막 다운로드 활성화
-        'writeautomaticsub': True,  # 자동 생성 자막도 허용
-        'subtitleslangs': [language, 'en'],  # 요청 언어와 영어 자막 시도
-        'subtitlesformat': 'srv2',  # SRT 형식으로 가져오기
+    options = {
         'quiet': True,
         'no_warnings': True,
-        'socket_timeout': 30,  # 소켓 타임아웃 증가 (초 단위)
-        'retries': 10,  # 내부 재시도 증가
-        'fragment_retries': 10,  # 조각 재시도 증가
-        'extractor_retries': 5,  # 추출기 재시도 증가
-        'skip_unavailable_fragments': True,  # 사용 불가능한 조각 건너뛰기
-        'ignoreerrors': True,  # 오류 무시하고 계속 진행
-        'geo_bypass': True,  # 지역 제한 우회 시도
-        'geo_bypass_country': 'US',  # 미국 지역으로 우회
-        'nocheckcertificate': True,  # 인증서 확인 건너뛰기
-        'extract_flat': True,  # 단일 비디오 정보만 추출
+        'ignoreerrors': True,
+        'extract_flat': True,
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': [language, 'en'],
+        'subtitlesformat': 'json3',
+        'user_agent': user_agent,
+        'http_headers': http_headers,
+        'nocheckcertificate': True,
+        'socket_timeout': 30,
+        'retries': 10,
+        'fragment_retries': 10,
+        'retry_sleep_functions': {'fragment': lambda n: 5 * (n + 1), 'file': lambda n: 5 * (n + 1)},
     }
     
-    # 사용자 에이전트 설정
-    if user_agent:
-        ydl_opts['user_agent'] = user_agent
-    else:
-        ydl_opts['user_agent'] = get_random_browser_fingerprint()
+    # 프록시 설정 추가
+    if USE_PROXIES:
+        proxy = get_random_proxy()
+        if proxy:
+            options['proxy'] = proxy
     
-    # HTTP 헤더 설정
-    if http_headers:
-        ydl_opts['http_headers'] = http_headers
-    else:
-        ydl_opts['http_headers'] = get_random_headers()
+    # 쿠키 설정 추가
+    if cookie_file:
+        options['cookiefile'] = cookie_file
     
-    # 쿠키 파일 설정
-    if cookie_file and USE_YTDLP_COOKIES:
-        ydl_opts['cookiefile'] = cookie_file
-    
-    return ydl_opts 
+    return options
 
 # Tor 네트워크 연결 테스트 (사용 가능한지 확인)
 def test_tor_connection():
@@ -1545,3 +1615,431 @@ def find_json_end(text: str, start: int) -> int:
             else:
                 return -1  # 균형이 맞지 않는 괄호
     return -1  # 끝 괄호를 찾지 못함 
+
+async def extract_subtitles_with_external_api(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """
+    외부 자막 API 서비스를 사용하여 자막을 추출합니다.
+    여러 외부 API를 시도하여 자막을 가져옵니다.
+    """
+    logger.info(f"외부 API로 자막 추출 시작: {video_id}, 언어: {language}")
+    
+    try:
+        # 1. 외부 API 서비스 목록 (여러 서비스를 시도)
+        external_apis = [
+            {
+                "name": "YouTubeTranscriptApi (래퍼)",
+                "url": f"https://yt-transcript-api.herokuapp.com/transcript?videoId={video_id}&lang={language}",
+                "method": "get",
+                "headers": {"User-Agent": get_random_browser_fingerprint()},
+                "data": None,
+                "handler": lambda resp: resp.get("transcript", "")
+            },
+            {
+                "name": "SaveSubs API",
+                "url": "https://savesubs.com/action/get",
+                "method": "post",
+                "headers": {
+                    "User-Agent": get_random_browser_fingerprint(),
+                    "Content-Type": "application/json",
+                    "Origin": "https://savesubs.com",
+                    "Referer": "https://savesubs.com/"
+                },
+                "data": {"url": f"https://www.youtube.com/watch?v={video_id}", "lang": language},
+                "handler": lambda resp: resp.get("text", "")
+            },
+            {
+                "name": "DownSub API",
+                "url": "https://downsub.com/api/getSubtitle",
+                "method": "post",
+                "headers": {
+                    "User-Agent": get_random_browser_fingerprint(), 
+                    "Content-Type": "application/json",
+                    "Origin": "https://downsub.com",
+                    "Referer": "https://downsub.com/"
+                },
+                "data": {"url": f"https://www.youtube.com/watch?v={video_id}", "lang": language},
+                "handler": lambda resp: resp.get("subtitles", {}).get("text", "")
+            }
+        ]
+        
+        # aiohttp 세션 생성
+        async with aiohttp.ClientSession() as session:
+            for api in external_apis:
+                logger.info(f"{api['name']} 시도 중...")
+                
+                try:
+                    # 프록시 설정
+                    proxy = get_random_proxy() if USE_PROXIES else None
+                    
+                    # API 요청 방식에 따라 호출
+                    if api["method"].lower() == "get":
+                        async with session.get(
+                            api["url"], 
+                            headers=api["headers"], 
+                            proxy=proxy, 
+                            timeout=30,
+                            ssl=False
+                        ) as response:
+                            if response.status == 200:
+                                response_data = await response.json()
+                                subtitle_text = api["handler"](response_data)
+                                
+                                if subtitle_text:
+                                    logger.info(f"{api['name']}로 자막 추출 성공")
+                                    return True, {
+                                        'success': True,
+                                        'data': {
+                                            'text': subtitle_text,
+                                            'subtitles': [],
+                                            'videoInfo': video_info
+                                        }
+                                    }
+                            else:
+                                logger.warning(f"{api['name']} 실패: 상태 코드 {response.status}")
+                    else:  # POST 메서드
+                        async with session.post(
+                            api["url"], 
+                            headers=api["headers"], 
+                            json=api["data"],
+                            proxy=proxy, 
+                            timeout=30,
+                            ssl=False
+                        ) as response:
+                            if response.status == 200:
+                                response_data = await response.json()
+                                subtitle_text = api["handler"](response_data)
+                                
+                                if subtitle_text:
+                                    logger.info(f"{api['name']}로 자막 추출 성공")
+                                    return True, {
+                                        'success': True,
+                                        'data': {
+                                            'text': subtitle_text,
+                                            'subtitles': [],
+                                            'videoInfo': video_info
+                                        }
+                                    }
+                            else:
+                                logger.warning(f"{api['name']} 실패: 상태 코드 {response.status}")
+                except Exception as e:
+                    logger.error(f"{api['name']} 호출 중 오류: {str(e)}")
+                    continue
+        
+        logger.warning(f"모든 외부 API에서 자막을 찾을 수 없음: {video_id}")
+        return False, {
+            'success': False,
+            'message': f"Could not find captions from external APIs for video: {video_id}"
+        }
+    except Exception as e:
+        logger.error(f"외부 API 자막 추출 과정에서 오류 발생: {str(e)}")
+        return False, {
+            'success': False,
+            'message': f"Error in external API caption extraction: {str(e)}"
+        }
+
+# 파일 끝에 추가
+try:
+    import undetected_chromedriver as uc
+    UNDETECTED_CHROME_AVAILABLE = True
+except ImportError:
+    UNDETECTED_CHROME_AVAILABLE = False
+    logger.warning("undetected_chromedriver가 설치되지 않았습니다. 'pip install undetected-chromedriver'로 설치하면 봇 감지 회피 성능이 향상됩니다.")
+
+async def extract_subtitles_with_undetected_chrome(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """
+    undetected_chromedriver를 사용하여 YouTube의 봇 감지를 우회하고 자막을 추출합니다.
+    이 방법은 일반 브라우저 자동화보다 감지 회피에 더 효과적입니다.
+    """
+    if not UNDETECTED_CHROME_AVAILABLE:
+        logger.error("undetected_chromedriver가 설치되지 않아 이 방법을 사용할 수 없습니다.")
+        return False, {
+            'success': False,
+            'message': "undetected_chromedriver is not installed"
+        }
+    
+    logger.info(f"undetected_chromedriver로 자막 추출 시작: {video_id}, 언어: {language}")
+    
+    # 비동기 실행을 위한 래퍼 함수
+    def _extract_with_uc():
+        try:
+            # 브라우저 옵션 설정
+            options = uc.ChromeOptions()
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--lang=ko-KR")  # 한국어 설정
+            
+            # 헤드리스 모드 (서버 환경에서 필요)
+            options.add_argument("--headless=new")  # 새로운 헤드리스 모드
+            
+            # 랜덤 사용자 에이전트
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+            ]
+            options.add_argument(f"--user-agent={random.choice(user_agents)}")
+            
+            # 추가 위장 옵션
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            
+            # 개발자 도구 브레이크포인트 우회
+            # (debugger 감지 피하기)
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("useAutomationExtension", False)
+            
+            # 브라우저 생성
+            browser = uc.Chrome(options=options)
+            
+            # 인간처럼 창 크기 설정
+            browser.set_window_size(random.randint(1050, 1920), random.randint(800, 1080))
+            
+            # 쿠키 설정
+            browser.get("https://www.youtube.com")
+            
+            # 자연스러운 대기
+            time.sleep(random.uniform(2, 4))
+            
+            # YouTube 동영상 페이지 접속
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            browser.get(video_url)
+            
+            # 페이지 로딩 대기
+            time.sleep(random.uniform(3, 5))
+            
+            # 비디오 정보 추출
+            try:
+                title_element = browser.find_element("css selector", "h1.title.style-scope.ytd-video-primary-info-renderer")
+                video_info['title'] = title_element.text.strip()
+            except:
+                logger.warning("비디오 제목을 찾을 수 없습니다.")
+            
+            try:
+                channel_element = browser.find_element("css selector", "#channel-name #text")
+                video_info['channelName'] = channel_element.text.strip()
+            except:
+                logger.warning("채널 이름을 찾을 수 없습니다.")
+            
+            # 자막 버튼 클릭 시도
+            try:
+                # 비디오 재생 시작
+                video_element = browser.find_element("css selector", "video.html5-main-video")
+                browser.execute_script("arguments[0].play()", video_element)
+                
+                # 자막 버튼 활성화
+                caption_button = browser.find_element("css selector", ".ytp-subtitles-button")
+                if not "ytp-button-toggled" in caption_button.get_attribute("class"):
+                    caption_button.click()
+                    time.sleep(1)
+                
+                # 자막 언어 설정 시도
+                settings_button = browser.find_element("css selector", ".ytp-settings-button")
+                settings_button.click()
+                time.sleep(0.5)
+                
+                # 자막 메뉴 찾기
+                try:
+                    # 설정에서 자막 관련 메뉴 찾기
+                    subtitles_items = browser.find_elements("css selector", ".ytp-menuitem")
+                    for item in subtitles_items:
+                        if "자막" in item.text or "Subtitles" in item.text or "Caption" in item.text:
+                            item.click()
+                            time.sleep(0.5)
+                            break
+                    
+                    # 언어 선택 메뉴 항목 찾기
+                    language_items = browser.find_elements("css selector", ".ytp-menuitem")
+                    for item in language_items:
+                        if language in item.text.lower() or "korean" in item.text.lower() or "한국어" in item.text:
+                            item.click()
+                            time.sleep(0.5)
+                            break
+                except:
+                    logger.warning("자막 설정 메뉴 조작 실패 (무시)")
+            except:
+                logger.warning("자막 버튼을 찾을 수 없거나 클릭 실패 (무시)")
+            
+            # 비디오 스크롤 및 자막 표시 대기
+            browser.execute_script("window.scrollBy(0, 300)")
+            time.sleep(random.uniform(3, 5))
+            
+            # ytInitialPlayerResponse에서 자막 정보 추출
+            script = """
+            return (function() {
+                // ytInitialPlayerResponse 찾기
+                try {
+                    let playerResponse = null;
+                    // 방법 1: 윈도우 변수에서 직접 가져오기
+                    if (window.ytInitialPlayerResponse) {
+                        playerResponse = window.ytInitialPlayerResponse;
+                    } 
+                    // 방법 2: HTML에서 스크립트 태그 찾기
+                    else {
+                        const scripts = document.querySelectorAll('script');
+                        for (const script of scripts) {
+                            if (script.textContent.includes('ytInitialPlayerResponse')) {
+                                const match = script.textContent.match(/ytInitialPlayerResponse\\s*=\\s*({.+?});/);
+                                if (match) {
+                                    playerResponse = JSON.parse(match[1]);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (playerResponse && playerResponse.captions) {
+                        return playerResponse.captions;
+                    }
+                    
+                    return null;
+                } catch (e) {
+                    return { error: e.toString() };
+                }
+            })();
+            """
+            
+            # 스크립트 실행으로 자막 정보 추출
+            captions_data = browser.execute_script(script)
+            
+            # 현재 표시된 자막 추출 시도
+            visible_captions_script = """
+            return (function() {
+                try {
+                    // 화면에 보이는 자막 추출
+                    const captionsContainer = document.querySelector('.ytp-caption-segment');
+                    if (captionsContainer) {
+                        return Array.from(document.querySelectorAll('.ytp-caption-segment'))
+                            .map(el => el.textContent).join('\\n');
+                    }
+                    return '';
+                } catch (e) {
+                    return '';
+                }
+            })();
+            """
+            
+            visible_captions = browser.execute_script(visible_captions_script)
+            
+            # 자막 URL 추출 및 처리
+            subtitle_text = ""
+            
+            if captions_data and 'playerCaptionsTracklistRenderer' in captions_data:
+                caption_tracks = captions_data['playerCaptionsTracklistRenderer'].get('captionTracks', [])
+                
+                # 요청한 언어 또는 영어 자막 찾기
+                selected_track = None
+                
+                # 1. 요청한 언어 찾기
+                for track in caption_tracks:
+                    track_lang = track.get('languageCode', '').lower()
+                    if language.lower() in track_lang or track_lang in language.lower():
+                        selected_track = track
+                        logger.info(f"요청한 언어({language}) 자막 찾음")
+                        break
+                
+                # 2. 영어 자막으로 폴백
+                if not selected_track and language != 'en':
+                    for track in caption_tracks:
+                        if 'en' in track.get('languageCode', '').lower():
+                            selected_track = track
+                            logger.info("영어 자막으로 대체")
+                            break
+                
+                # 3. 첫 번째 자막 트랙 사용
+                if not selected_track and caption_tracks:
+                    selected_track = caption_tracks[0]
+                    logger.info(f"첫 번째 자막 트랙 사용: {selected_track.get('languageCode')}")
+                
+                if selected_track and 'baseUrl' in selected_track:
+                    caption_url = selected_track['baseUrl']
+                    
+                    # 자막 URL에 파라미터 추가 (일부 제한 우회)
+                    if not 'fmt=' in caption_url:
+                        caption_url += '&fmt=json3'
+                    
+                    # 자막 데이터 요청
+                    try:
+                        import requests
+                        headers = {
+                            'User-Agent': browser.execute_script('return navigator.userAgent'),
+                            'Referer': video_url,
+                            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                        }
+                        
+                        response = requests.get(caption_url, headers=headers, timeout=10)
+                        
+                        if response.status_code == 200:
+                            caption_data = response.json()
+                            
+                            # JSON 형식 자막 처리
+                            if 'events' in caption_data:
+                                subtitle_lines = []
+                                for event in caption_data['events']:
+                                    if 'segs' in event:
+                                        line = ""
+                                        for seg in event['segs']:
+                                            if 'utf8' in seg:
+                                                line += seg['utf8']
+                                        if line.strip():
+                                            subtitle_lines.append(line.strip())
+                                
+                                subtitle_text = '\n'.join(subtitle_lines)
+                                logger.info(f"JSON 형식 자막 추출 성공: {len(subtitle_text)} 자")
+                    except Exception as e:
+                        logger.error(f"자막 URL 요청 실패: {str(e)}")
+            
+            # 화면에 표시된 자막이 있는 경우 추가
+            if not subtitle_text and visible_captions:
+                subtitle_text = visible_captions
+                logger.info(f"화면에 표시된 자막 추출 성공: {len(subtitle_text)} 자")
+            
+            # 최종 정리
+            browser.quit()
+            
+            if subtitle_text:
+                return True, {
+                    'text': subtitle_text,
+                    'videoInfo': video_info
+                }
+            else:
+                return False, {
+                    'message': f"Could not extract subtitles using undetected_chromedriver for video: {video_id}"
+                }
+                
+        except Exception as e:
+            logger.error(f"undetected_chromedriver 자막 추출 오류: {str(e)}")
+            try:
+                browser.quit()
+            except:
+                pass
+            return False, {
+                'message': f"Error extracting subtitles with undetected_chromedriver: {str(e)}"
+            }
+    
+    # 비동기 스레드 풀에서 동기 함수 실행
+    try:
+        loop = asyncio.get_event_loop()
+        success, result = await loop.run_in_executor(None, _extract_with_uc)
+        
+        if success:
+            logger.info(f"undetected_chromedriver로 자막 추출 성공: {video_id}")
+            return True, {
+                'success': True,
+                'data': {
+                    'text': result['text'],
+                    'subtitles': [],  # 호환성을 위한 빈 배열
+                    'videoInfo': result['videoInfo']
+                }
+            }
+        else:
+            logger.warning(f"undetected_chromedriver로 자막 추출 실패: {video_id}")
+            return False, {
+                'success': False,
+                'message': result.get('message', 'Failed to extract subtitles')
+            }
+    except Exception as e:
+        logger.error(f"undetected_chromedriver 비동기 실행 오류: {str(e)}")
+        return False, {
+            'success': False,
+            'message': f"Async execution error with undetected_chromedriver: {str(e)}"
+        }

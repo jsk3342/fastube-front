@@ -8,6 +8,10 @@ youtube-transcript-api<1.0.0,>=0.6.0
 beautifulsoup4<5.0.0,>=4.10.0
 requests<3.0.0,>=2.25.0
 lxml<5.0.0,>=4.9.0
+aiohttp<4.0.0,>=3.8.0
+# 봇 감지 회피를 위한 의존성
+undetected-chromedriver<4.0.0,>=3.5.0
+selenium<5.0.0,>=4.10.0
 # 선택적 의존성 (Tor 네트워크 사용 시)
 # PySocks<2.0.0,>=1.7.1
 # stem<2.0.0,>=1.8.1 
