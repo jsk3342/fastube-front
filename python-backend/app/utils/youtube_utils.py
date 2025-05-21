@@ -10,6 +10,9 @@ import time
 import os
 import json
 from pathlib import Path
+import requests
+from bs4 import BeautifulSoup
+from youtube_transcript_api import YouTubeTranscriptApi, _errors
 
 # 로깅 설정
 logging.basicConfig(
@@ -21,7 +24,11 @@ logger = logging.getLogger("youtube_utils")
 # 전역 변수
 last_request_time = 0
 min_request_interval = 5  # 초 단위
-USE_BROWSER_FALLBACK = True  # Playwright 브라우저 폴백 사용 여부
+USE_BROWSER_FIRST = True  # Playwright 브라우저를 우선적으로 사용
+USE_BROWSER_FALLBACK = True  # yt-dlp 실패 시 Playwright 폴백 사용 여부
+USE_YTDLP_COOKIES = True  # yt-dlp에 쿠키 사용 여부
+USE_TOR_NETWORK = False  # Tor 네트워크 사용 여부 (설치 필요)
+TOR_PROXY = "socks5://127.0.0.1:9050"  # Tor 프록시 주소 (기본값)
 
 def extract_video_id(url: str) -> Optional[str]:
     """
@@ -248,8 +255,39 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
     time.sleep(wait_time)
     
     logger.info(f"자막 추출 시작 - 비디오 ID: {video_id}, 언어: {language}")
+
+    # 비디오 기본 정보 가져오기 (최소한의 정보)
+    video_info = {
+        'title': f"Video {video_id}",
+        'channelName': "Unknown Channel",
+        'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+        'videoId': video_id
+    }
     
-    # 1단계: yt-dlp로 시도
+    # 0단계: YouTube Transcript API로 먼저 시도 (가장 안정적인 방법)
+    try:
+        logger.info("YouTube Transcript API로 자막 추출 시도")
+        success, result = extract_subtitles_with_transcript_api(video_id, language, video_info)
+        if success:
+            return success, result
+        else:
+            logger.warning("YouTube Transcript API 실패, 다음 방법으로 진행")
+    except Exception as e:
+        logger.error(f"YouTube Transcript API 시도 중 오류 발생: {str(e)}, 다음 방법으로 진행")
+    
+    # 1단계: 브라우저 방식을 두번째로 시도 (설정에 따라)
+    if USE_BROWSER_FIRST:
+        try:
+            logger.info("브라우저 방식으로 자막 추출 시도")
+            success, result = extract_subtitles_with_browser(video_id, language, video_info)
+            if success:
+                return success, result
+            else:
+                logger.warning("브라우저 방식 실패, yt-dlp 방식으로 폴백")
+        except Exception as e:
+            logger.error(f"브라우저 방식 시도 중 오류 발생: {str(e)}, yt-dlp 방식으로 폴백")
+    
+    # 2단계: yt-dlp로 시도
     for attempt in range(max_retries):
         try:
             # 요청마다 다른 브라우저 지문 사용
@@ -260,7 +298,7 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
             
             # 쿠키 설정
             cookie_file = None
-            if random.random() > 0.3:  # 70% 확률로 쿠키 사용
+            if random.random() > 0.3 and USE_YTDLP_COOKIES:  # 70% 확률로 쿠키 사용
                 cookie_file = f"yt_cookies_{random.randint(1, 5)}.txt"
                 if not os.path.exists(cookie_file):
                     with open(cookie_file, 'w') as f:
@@ -270,30 +308,23 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
             auth_opts = setup_yt_auth(use_auth)
             
             # 다운로드 옵션 설정 (자막 중심)
-            ydl_opts = {
-                'skip_download': True,  # 비디오는 다운로드하지 않음
-                'writesubtitles': True,  # 자막 다운로드 활성화
-                'writeautomaticsub': True,  # 자동 생성 자막도 허용
-                'subtitleslangs': [language, 'en'],  # 요청 언어와 영어 자막 시도
-                'subtitlesformat': 'srv2',  # SRT 형식으로 가져오기
-                'quiet': True,
-                'no_warnings': True,
-                'user_agent': user_agent,
-                'http_headers': http_headers,
-            }
-            
-            # 쿠키 파일 사용 설정
-            if cookie_file:
-                ydl_opts['cookiefile'] = cookie_file
+            ydl_opts = get_ytdlp_base_options(video_id, language, user_agent, http_headers, cookie_file)
             
             # 인증 설정 병합
             ydl_opts.update(auth_opts)
+            
+            # 첫 번째 시도에서만 자동 업데이트 시도 (모든 요청마다 하는 건 비효율적)
+            if attempt == 0 and random.random() > 0.9:  # 10% 확률로 업데이트 시도
+                try:
+                    update_ytdlp()
+                except:
+                    pass
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # 정보 추출 (자막 포함)
                 info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
                 
-                # 비디오 정보 가져오기 (Node.js 백엔드와 형식 통일)
+                # 더 자세한 비디오 정보 가져오기
                 video_info = {
                     'title': info.get('title', f"Video {video_id}"),
                     'channelName': info.get('uploader', "Unknown Channel"),
@@ -312,7 +343,7 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
                         pass
                 
                 if subtitle_text:
-                    logger.info(f"자막 추출 성공: {len(subtitle_text)} 자")
+                    logger.info(f"yt-dlp 방식으로 자막 추출 성공: {len(subtitle_text)} 자")
                     # 요청 시간 업데이트
                     last_request_time = time.time()
                     return True, {
@@ -329,7 +360,7 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
                         logger.warning(f"자막을 찾을 수 없음. 다른 방법으로 재시도 ({attempt+1}/{max_retries})...")
                         time.sleep(random.uniform(2, 5))
                         continue
-                    elif USE_BROWSER_FALLBACK:
+                    elif USE_BROWSER_FALLBACK and not USE_BROWSER_FIRST:
                         # yt-dlp로 자막을 찾지 못한 경우 브라우저 방식으로 시도
                         logger.info(f"yt-dlp로 자막을 찾지 못해 브라우저 방식으로 시도합니다.")
                         return extract_subtitles_with_browser(video_id, language, video_info)
@@ -344,9 +375,9 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
         
         except Exception as e:
             error_msg = str(e)
-            logger.warning(f"시도 {attempt+1}/{max_retries} 실패: {error_msg}")
+            logger.warning(f"yt-dlp 시도 {attempt+1}/{max_retries} 실패: {error_msg}")
             
-            if "HTTP Error 429" in error_msg:  # 너무 많은 요청
+            if "HTTP Error 429" in error_msg or "Precondition check failed" in error_msg:  # 너무 많은 요청 또는 봇 감지
                 wait_time = (2 ** attempt) * 10  # 지수 백오프
                 logger.info(f"{wait_time}초 대기 후 재시도합니다...")
                 time.sleep(wait_time)
@@ -358,17 +389,10 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
                 }
             elif attempt < max_retries - 1:
                 time.sleep(random.uniform(2, 5))  # 일반 오류 시 짧은 대기
-            elif USE_BROWSER_FALLBACK:
+            elif USE_BROWSER_FALLBACK and not USE_BROWSER_FIRST:
                 # 모든 시도가 실패하고 마지막 시도인 경우 브라우저 방식 시도
                 logger.info(f"yt-dlp 접근이 실패하여 브라우저 방식으로 시도합니다.")
                 try:
-                    # 비디오 기본 정보 생성 (실제 정보를 가져오지 못했으므로)
-                    video_info = {
-                        'title': f"Video {video_id}",
-                        'channelName': "Unknown Channel",
-                        'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
-                        'videoId': video_id
-                    }
                     return extract_subtitles_with_browser(video_id, language, video_info)
                 except Exception as browser_e:
                     logger.error(f"브라우저 방식도 실패: {str(browser_e)}")
@@ -968,4 +992,285 @@ def get_random_browser_fingerprint():
     # 나머지 플랫폼에 대한 설정 유사하게 구현...
     
     # 기본값
-    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+
+def extract_subtitles_with_transcript_api(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """
+    YouTube Transcript API를 사용하여 자막을 추출합니다.
+    이 방법은 봇 감지를 회피하기 위한 가장 효과적인 방법입니다.
+    """
+    logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
+    
+    try:
+        # 자막 언어 코드 매핑
+        lang_code_map = {
+            'ko': ['ko', 'ko-KR'],
+            'en': ['en', 'en-US', 'en-GB'],
+            'ja': ['ja', 'ja-JP'],
+            'zh': ['zh', 'zh-Hans', 'zh-CN', 'zh-TW'],
+            'fr': ['fr', 'fr-FR'],
+            'de': ['de', 'de-DE'],
+        }
+        
+        # 요청 언어에 대한 다양한 코드 시도
+        target_langs = lang_code_map.get(language, [language])
+        
+        # 다른 언어로 폴백 할지 여부 (예: 한국어가 없으면 영어)
+        use_fallback = True
+        
+        # 자막 가져오기 시도
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        available_transcripts = list(transcript_list._transcripts.values())
+        
+        logger.info(f"사용 가능한 자막: {[t.language_code for t in available_transcripts]}")
+        
+        # 1단계: 수동 생성 자막에서 원하는 언어 찾기
+        transcript = None
+        for lang in target_langs:
+            try:
+                transcript = transcript_list.find_transcript(lang)
+                logger.info(f"원하는 언어의 자막 발견: {lang}")
+                break
+            except _errors.NoTranscriptFound:
+                continue
+        
+        # 2단계: 자동 생성 자막에서 원하는 언어 찾기
+        if transcript is None:
+            for lang in target_langs:
+                try:
+                    for t in available_transcripts:
+                        if t.language_code == lang and t.is_generated:
+                            transcript = t
+                            logger.info(f"원하는 언어의 자동 생성 자막 발견: {lang}")
+                            break
+                except:
+                    continue
+        
+        # 3단계: 영어 자막으로 폴백
+        if transcript is None and use_fallback and language != 'en':
+            fallback_langs = ['en', 'en-US', 'en-GB']
+            logger.info(f"원하는 언어 자막을 찾지 못해 영어 자막으로 시도")
+            
+            for lang in fallback_langs:
+                try:
+                    transcript = transcript_list.find_transcript(lang)
+                    logger.info(f"영어 자막 발견: {lang}")
+                    break
+                except _errors.NoTranscriptFound:
+                    continue
+        
+        # 4단계: 어떤 자막이든 사용
+        if transcript is None and available_transcripts:
+            logger.info(f"원하는 언어의 자막을 찾지 못해 첫 번째 가능한 자막 사용")
+            transcript = available_transcripts[0]
+        
+        if transcript:
+            # 자막 데이터 가져오기
+            transcript_data = transcript.fetch()
+            
+            # 자막 텍스트로 변환
+            subtitle_lines = []
+            for item in transcript_data:
+                text = item.get('text', '').strip()
+                if text:
+                    subtitle_lines.append(text)
+            
+            subtitle_text = '\n'.join(subtitle_lines)
+            
+            # 자막 텍스트가 있는 경우
+            if subtitle_text:
+                logger.info(f"YouTube Transcript API로 자막 추출 성공: {len(subtitle_text)} 자")
+                
+                # 비디오 정보 업데이트 시도
+                try:
+                    detailed_video_info = get_video_info_minimal(video_id)
+                    if detailed_video_info:
+                        video_info.update(detailed_video_info)
+                except Exception as e:
+                    logger.warning(f"자세한 비디오 정보 가져오기 실패 (기본 정보 사용): {str(e)}")
+                
+                return True, {
+                    'success': True,
+                    'data': {
+                        'text': subtitle_text,
+                        'subtitles': [],  # 호환성을 위한 빈 배열
+                        'videoInfo': video_info
+                    }
+                }
+        
+        # 자막을 찾지 못한 경우
+        logger.error(f"YouTube Transcript API로 자막을 찾을 수 없음: {video_id}")
+        return False, {
+            'success': False,
+            'message': f"Could not find captions for video: {video_id} (YouTube Transcript API method failed)"
+        }
+    
+    except _errors.TranscriptsDisabled:
+        logger.error(f"비디오에 자막이 비활성화됨: {video_id}")
+        return False, {
+            'success': False,
+            'message': f"Transcripts are disabled for this video: {video_id}"
+        }
+    except _errors.NoTranscriptAvailable:
+        logger.error(f"비디오에 자막이 없음: {video_id}")
+        return False, {
+            'success': False,
+            'message': f"No transcripts available for video: {video_id}"
+        }
+    except Exception as e:
+        logger.error(f"YouTube Transcript API 사용 중 오류 발생: {str(e)}")
+        return False, {
+            'success': False,
+            'message': f"Error in YouTube Transcript API: {str(e)}"
+        }
+
+def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
+    """
+    YouTube API를 사용하지 않고 최소한의 비디오 정보만 가져옵니다.
+    """
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {
+            'User-Agent': get_random_browser_fingerprint(),
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # 제목 추출
+        title = soup.find('meta', property='og:title')
+        title = title['content'] if title else f"Video {video_id}"
+        
+        # 채널 이름 추출 (여러 방법 시도)
+        channel = soup.find('meta', property='og:video:tag')
+        if not channel:
+            channel = soup.find('span', {'itemprop': 'author'})
+        channel_name = channel['content'] if channel and 'content' in channel.attrs else "Unknown Channel"
+        
+        # 썸네일 URL
+        thumbnail = soup.find('meta', property='og:image')
+        thumbnail_url = thumbnail['content'] if thumbnail else f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+        
+        return {
+            'title': title,
+            'channelName': channel_name,
+            'thumbnailUrl': thumbnail_url,
+            'videoId': video_id
+        }
+    except Exception as e:
+        logger.warning(f"최소 비디오 정보 가져오기 실패: {str(e)}")
+        return None
+
+# 깃헙에서 최신 yt-dlp 버전 확인 및 업데이트 함수
+def update_ytdlp():
+    """
+    yt-dlp를 최신 버전으로 업데이트합니다.
+    """
+    try:
+        import subprocess
+        logger.info("yt-dlp 업데이트 시도...")
+        result = subprocess.run(['pip', 'install', '--upgrade', 'yt-dlp'], 
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode == 0:
+            logger.info("yt-dlp 업데이트 성공")
+        else:
+            logger.warning(f"yt-dlp 업데이트 실패: {result.stderr}")
+    except Exception as e:
+        logger.error(f"yt-dlp 업데이트 중 오류 발생: {str(e)}")
+
+# yt-dlp를 사용할 때 필요한 기본 옵션 설정
+def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None, http_headers: Dict[str, str] = None, cookie_file: str = None):
+    """
+    yt-dlp 기본 옵션을 설정합니다.
+    """
+    # 기본 옵션
+    ydl_opts = {
+        'skip_download': True,  # 비디오는 다운로드하지 않음
+        'writesubtitles': True,  # 자막 다운로드 활성화
+        'writeautomaticsub': True,  # 자동 생성 자막도 허용
+        'subtitleslangs': [language, 'en'],  # 요청 언어와 영어 자막 시도
+        'subtitlesformat': 'srv2',  # SRT 형식으로 가져오기
+        'quiet': True,
+        'no_warnings': True,
+        'socket_timeout': 30,  # 소켓 타임아웃 증가 (초 단위)
+        'retries': 10,  # 내부 재시도 증가
+        'fragment_retries': 10,  # 조각 재시도 증가
+        'extractor_retries': 5,  # 추출기 재시도 증가
+        'skip_unavailable_fragments': True,  # 사용 불가능한 조각 건너뛰기
+        'ignoreerrors': True,  # 오류 무시하고 계속 진행
+        'geo_bypass': True,  # 지역 제한 우회 시도
+        'geo_bypass_country': 'US',  # 미국 지역으로 우회
+        'nocheckcertificate': True,  # 인증서 확인 건너뛰기
+        'extract_flat': True,  # 단일 비디오 정보만 추출
+    }
+    
+    # 사용자 에이전트 설정
+    if user_agent:
+        ydl_opts['user_agent'] = user_agent
+    else:
+        ydl_opts['user_agent'] = get_random_browser_fingerprint()
+    
+    # HTTP 헤더 설정
+    if http_headers:
+        ydl_opts['http_headers'] = http_headers
+    else:
+        ydl_opts['http_headers'] = get_random_headers()
+    
+    # 쿠키 파일 설정
+    if cookie_file and USE_YTDLP_COOKIES:
+        ydl_opts['cookiefile'] = cookie_file
+    
+    return ydl_opts 
+
+# Tor 네트워크 연결 테스트 (사용 가능한지 확인)
+def test_tor_connection():
+    """
+    Tor 네트워크 연결을 테스트합니다.
+    """
+    if not USE_TOR_NETWORK:
+        return False
+    
+    try:
+        import requests
+        import socks
+        import socket
+        
+        # Tor SOCKS 프록시 설정
+        socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", 9050)
+        socket.socket = socks.socksocket
+        
+        # Tor 네트워크를 통해 요청
+        response = requests.get('https://check.torproject.org/', timeout=10)
+        
+        # Tor 사용 여부 확인
+        if 'Congratulations. This browser is configured to use Tor' in response.text:
+            logger.info("Tor 네트워크 연결 성공")
+            return True
+        else:
+            logger.warning("Tor 연결 실패: Tor 네트워크를 통과하지 않음")
+            return False
+    except Exception as e:
+        logger.error(f"Tor 연결 테스트 실패: {str(e)}")
+        return False
+
+# Tor 네트워크 IP 변경 (새 경로)
+def rotate_tor_identity():
+    """
+    Tor 네트워크의 ID를 변경하여 새 IP를 얻습니다.
+    """
+    if not USE_TOR_NETWORK:
+        return False
+    
+    try:
+        from stem import Signal
+        from stem.control import Controller
+        
+        with Controller.from_port(port=9051) as controller:
+            controller.authenticate()  # Tor 컨트롤러 비밀번호 설정 필요할 수 있음
+            controller.signal(Signal.NEWNYM)
+            logger.info("Tor 네트워크 ID 변경 (새 IP 요청)")
+            return True
+    except Exception as e:
+        logger.error(f"Tor ID 변경 실패: {str(e)}")
+        return False 

@@ -3,4 +3,10 @@ uvicorn>=0.22.0,<0.30.0
 yt-dlp>=2023.7.6,<2024.0.0
 pydantic>=2.0.0,<3.0.0
 python-multipart>=0.0.5,<0.1.0
-playwright>=1.40.0,<2.0.0 
+playwright>=1.40.0,<2.0.0
+youtube-transcript-api>=0.6.0,<1.0.0
+beautifulsoup4>=4.10.0,<5.0.0
+requests>=2.25.0,<3.0.0
+# 선택적 의존성 (Tor 네트워크 사용 시)
+# PySocks>=1.7.1,<2.0.0
+# stem>=1.8.0,<2.0.0 
