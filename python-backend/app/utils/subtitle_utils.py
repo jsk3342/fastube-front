@@ -24,48 +24,30 @@ def format_time(seconds: float) -> str:
     Returns:
         "00:00" 형식의 시간 문자열
     """
-    # 정수로 변환하여 소수점 제거
-    total_seconds = int(seconds)
-    mins = total_seconds // 60
-    secs = total_seconds % 60
-    return f"{mins:02d}:{secs:02d}"
+    # 정수로 변환하여 소수점 제거 (안전하게 먼저 float으로 변환 후 int로 변환)
+    try:
+        total_seconds = int(float(seconds))
+        mins = total_seconds // 60
+        secs = total_seconds % 60
+        return f"{mins:02d}:{secs:02d}"
+    except (ValueError, TypeError):
+        # 변환 오류 시 기본값 반환
+        return "00:00"
 
 def decode_html_entities(text: str) -> str:
     """
-    HTML 엔티티를 정상 문자로 변환합니다.
+    HTML 엔티티가 포함된 텍스트를 디코딩합니다.
     
     Args:
-        text: 변환할 HTML 엔티티가 포함된 텍스트
+        text: 디코딩할 텍스트
         
     Returns:
-        변환된 텍스트
+        디코딩된 텍스트
     """
-    # 이름 참조 형식 엔티티(&quot; 등) 수동 변환
-    entities = {
-        "&quot;": '"',
-        "&apos;": "'",
-        "&amp;": "&",
-        "&lt;": "<",
-        "&gt;": ">",
-        "&nbsp;": " ",
-    }
-    
-    # 정규식으로 이름 참조 엔티티 변환
-    decoded = re.sub(
-        r"&quot;|&apos;|&amp;|&lt;|&gt;|&nbsp;",
-        lambda match: entities.get(match.group(0), match.group(0)),
-        text
-    )
-    
-    # 숫자 참조 형식 엔티티(&#39; 등) 처리
-    decoded = re.sub(
-        r"&#(\d+);",
-        lambda match: chr(int(match.group(1))),
-        decoded
-    )
-    
-    # html 모듈을 사용한 추가 디코딩
-    return html.unescape(decoded)
+    try:
+        return html.unescape(text)
+    except Exception:
+        return text
 
 def enhance_subtitle_items(subtitles: List[SubtitleItem]) -> List[SubtitleItem]:
     """
@@ -206,7 +188,7 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
         start = item.get("start", 0)
         dur = item.get("duration", 2)  # 기본 지속 시간 2초
         
-        # 시간을 "00:00" 형식으로 포맷팅
+        # 시간을 "00:00" 형식으로 포맷팅 (항상 수행)
         start_formatted = format_time(start)
         
         # 텍스트 내 HTML 엔티티 디코딩

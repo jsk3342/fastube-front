@@ -530,8 +530,10 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
     지정된 언어로 YouTube 비디오의 자막을 가져옵니다.
     성능 향상을 위해 우선적으로 YouTube Transcript API를 사용하고,
     실패하면 Tor 네트워크를 통한 yt-dlp 방식을 시도합니다.
+    이미 응답을 반환한 경우 추가 시도를 하지 않습니다.
     """
     global last_request_time
+    response_sent = False
     
     # 최적화: 비디오 URL 생성 및 로깅
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -558,7 +560,7 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
     except Exception as e:
         logger.error(f"비디오 정보 가져오기 예외 발생: {str(e)}, 기본 정보 사용")
     
-    # 추출 방법: 1) YouTube Transcript API, 2) yt-dlp + Tor
+    # 추출 방법: 1) YouTube Transcript API
     extraction_methods = [
         {
             "name": "YouTube Transcript API",
@@ -567,48 +569,25 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
         }
     ]
     
-    # 필요시 Tor 네트워크를 통한 yt-dlp 방식 추가
-    if USE_TOR_NETWORK:
-        extraction_methods.append({
-            "name": "yt-dlp + Tor",
-            "func": _run_ytdlp_async,
-            "args": [video_id, language, video_info, 1]  # 최대 1회 시도
-        })
-    
+    # 오류 정보 수집
     errors = {}
     
-    # 각 방법 시도
+    # 각 메서드를 순차적으로 시도
     for method in extraction_methods:
+        if response_sent:
+            break
+            
         method_name = method["name"]
         func = method["func"]
         args = method["args"]
         
-        logger.info(f"방법 시도: {method_name}")
-        
         try:
-            # 함수 실행 (최대 5초 타임아웃 설정)
-            if asyncio.iscoroutinefunction(func):
-                try:
-                    # 비동기 함수 실행
-                    func_task = asyncio.create_task(func(*args))
-                    success, result = await asyncio.wait_for(func_task, timeout=8.0)  # 타임아웃 8초로 증가
-                except asyncio.TimeoutError:
-                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (8초)")
-                    errors[method_name] = "Execution timeout"
-                    continue
-            else:
-                # 동기 함수 실행
-                try:
-                    func_result = await asyncio.to_thread(func, *args)
-                    success, result = await asyncio.wait_for(asyncio.sleep(0, result=func_result), timeout=8.0)
-                except asyncio.TimeoutError:
-                    logger.error(f"방법 '{method_name}' 실행 타임아웃 (8초)")
-                    errors[method_name] = "Execution timeout"
-                    continue
-                
+            # 함수 호출 방식에 따라 실행
+            success, result = func(*args)
+            
             if success:
                 logger.info(f"방법 '{method_name}'으로 자막 추출 성공")
-                last_request_time = time.time()
+                response_sent = True
                 
                 # 자막 데이터가 있는 경우 서브타이틀 처리
                 if 'data' in result and 'text' in result['data']:
@@ -641,9 +620,10 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
                 # 비디오에 자막이 없는 경우 사용 가능한 언어 목록 반환 (첫 번째 방법 실패 시에만)
                 if 'availableLanguages' in result and method_name == "YouTube Transcript API":
                     # 다음 방법이 있으면 계속 진행
-                    if len(extraction_methods) > 1:
+                    if not response_sent and len(extraction_methods) > 1:
                         continue
                     
+                    response_sent = True
                     return False, {
                         "success": False,
                         "message": f"요청한 언어({language})의 자막을 찾을 수 없습니다.",
@@ -656,12 +636,16 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
             traceback.print_exc()
     
     # 모든 방법 실패
-    logger.error("자막 추출 실패")
-    return False, {
-        "success": False,
-        "message": f"비디오 {video_id}의 자막을 찾을 수 없습니다.",
-        "errors": errors
-    }
+    if not response_sent:
+        logger.error("자막 추출 실패")
+        return False, {
+            "success": False,
+            "message": f"비디오 {video_id}의 자막을 찾을 수 없습니다.",
+            "errors": errors
+        }
+    
+    # 이미 응답이 전송된 경우 (이 코드에 도달하지 않아야 함)
+    return False, {"success": False, "message": "알 수 없는 오류가 발생했습니다."}
 
 async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, Any], max_retries: int = 3) -> Tuple[bool, Dict[str, Any]]:
     """
