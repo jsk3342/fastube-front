@@ -8,6 +8,8 @@ import yt_dlp
 import random
 import time
 import os
+import json
+from pathlib import Path
 
 # 로깅 설정
 logging.basicConfig(
@@ -19,6 +21,7 @@ logger = logging.getLogger("youtube_utils")
 # 전역 변수
 last_request_time = 0
 min_request_interval = 5  # 초 단위
+USE_BROWSER_FALLBACK = True  # Playwright 브라우저 폴백 사용 여부
 
 def extract_video_id(url: str) -> Optional[str]:
     """
@@ -246,6 +249,7 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
     
     logger.info(f"자막 추출 시작 - 비디오 ID: {video_id}, 언어: {language}")
     
+    # 1단계: yt-dlp로 시도
     for attempt in range(max_retries):
         try:
             # 요청마다 다른 브라우저 지문 사용
@@ -325,6 +329,10 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
                         logger.warning(f"자막을 찾을 수 없음. 다른 방법으로 재시도 ({attempt+1}/{max_retries})...")
                         time.sleep(random.uniform(2, 5))
                         continue
+                    elif USE_BROWSER_FALLBACK:
+                        # yt-dlp로 자막을 찾지 못한 경우 브라우저 방식으로 시도
+                        logger.info(f"yt-dlp로 자막을 찾지 못해 브라우저 방식으로 시도합니다.")
+                        return extract_subtitles_with_browser(video_id, language, video_info)
                     else:
                         logger.error(f"자막을 찾을 수 없음: {video_id}")
                         # 요청 시간 업데이트
@@ -350,6 +358,27 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
                 }
             elif attempt < max_retries - 1:
                 time.sleep(random.uniform(2, 5))  # 일반 오류 시 짧은 대기
+            elif USE_BROWSER_FALLBACK:
+                # 모든 시도가 실패하고 마지막 시도인 경우 브라우저 방식 시도
+                logger.info(f"yt-dlp 접근이 실패하여 브라우저 방식으로 시도합니다.")
+                try:
+                    # 비디오 기본 정보 생성 (실제 정보를 가져오지 못했으므로)
+                    video_info = {
+                        'title': f"Video {video_id}",
+                        'channelName': "Unknown Channel",
+                        'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                        'videoId': video_id
+                    }
+                    return extract_subtitles_with_browser(video_id, language, video_info)
+                except Exception as browser_e:
+                    logger.error(f"브라우저 방식도 실패: {str(browser_e)}")
+                    # 최종적으로 모든 방법 실패
+                    # 요청 시간 업데이트
+                    last_request_time = time.time()
+                    return False, {
+                        'success': False,
+                        'message': f"Failed to extract subtitles: {error_msg}, Browser fallback also failed: {str(browser_e)}"
+                    }
             else:
                 # 요청 시간 업데이트
                 last_request_time = time.time()
@@ -364,6 +393,330 @@ def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -
         'success': False,
         'message': "Maximum retries exceeded"
     }
+
+def extract_subtitles_with_browser(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Playwright를 사용하여 브라우저로 유튜브 자막을 추출합니다.
+    이 방법은 봇 감지를 효과적으로 우회할 수 있습니다.
+    """
+    logger.info(f"브라우저 방식으로 자막 추출 시작: {video_id}, 언어: {language}")
+    
+    try:
+        # 필요한 모듈 임포트 (필요시 설치)
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.error("Playwright가 설치되지 않았습니다. 'pip install playwright'로 설치한 후 'playwright install' 명령을 실행하세요.")
+            return False, {
+                'success': False, 
+                'message': "Playwright is not installed. Install with 'pip install playwright' and run 'playwright install'"
+            }
+        
+        # 쿠키 저장 경로
+        cookie_dir = Path("./browser_data")
+        cookie_dir.mkdir(exist_ok=True)
+        cookie_file = cookie_dir / f"youtube_cookies_{random.randint(1, 10)}.json"
+        
+        with sync_playwright() as p:
+            # 브라우저 시작 (헤드리스 모드)
+            # 프로덕션 환경에서는 headless=True로 설정
+            browser = p.chromium.launch(headless=True)
+            
+            # 브라우저 컨텍스트 생성 (사용자 에이전트 및 뷰포트 설정)
+            user_agent = get_random_browser_fingerprint()
+            context = browser.new_context(
+                user_agent=user_agent,
+                viewport={'width': random.randint(1024, 1920), 'height': random.randint(768, 1080)},
+            )
+            
+            # 저장된 쿠키 불러오기 (있는 경우)
+            if cookie_file.exists():
+                try:
+                    with open(cookie_file, 'r') as f:
+                        cookies = json.load(f)
+                    context.add_cookies(cookies)
+                    logger.info(f"저장된 쿠키 불러오기 성공: {cookie_file}")
+                except Exception as e:
+                    logger.warning(f"쿠키 로드 실패: {str(e)}")
+            
+            # 새 페이지 열기
+            page = context.new_page()
+            
+            # 유튜브 접속 전 랜덤 사이트 방문 (더 자연스러운 행동 시뮬레이션)
+            if random.random() > 0.7:  # 30% 확률로 실행
+                referral_sites = ['https://www.google.com', 'https://search.naver.com', 'https://www.bing.com']
+                page.goto(random.choice(referral_sites), wait_until='networkidle')
+                logger.info("자연스러운 행동 시뮬레이션: 검색 엔진 방문")
+                time.sleep(random.uniform(1, 3))
+                
+                # 검색창에 검색어 입력 (구글 기준)
+                search_terms = ['youtube video', '유튜브 영상', 'how to', 'music video']
+                search_term = f"{random.choice(search_terms)} {video_id}"
+                try:
+                    page.fill('input[name="q"]', search_term)
+                    page.press('input[name="q"]', 'Enter')
+                    time.sleep(random.uniform(2, 4))
+                    logger.info(f"검색어 입력: {search_term}")
+                except Exception as e:
+                    logger.warning(f"검색 시도 실패 (무시): {str(e)}")
+            
+            # 유튜브 영상 페이지로 이동
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
+            page.goto(video_url, wait_until='networkidle')
+            logger.info(f"유튜브 영상 페이지 접속: {video_url}")
+            
+            # 페이지 로딩 대기
+            time.sleep(random.uniform(2, 5))
+            
+            # 인간 행동 시뮬레이션
+            simulate_human_behavior(page)
+            
+            # 자막 버튼 클릭
+            try:
+                # 자막 버튼 찾고 클릭
+                logger.info("자막 버튼 찾기 시도...")
+                caption_button = page.locator('.ytp-subtitles-button')
+                
+                # 자막 버튼이 활성화되어 있지 않으면 클릭
+                if caption_button.is_visible():
+                    logger.info("자막 버튼 발견, 클릭 시도...")
+                    caption_button.click()
+                    time.sleep(random.uniform(0.5, 1.5))
+                else:
+                    logger.warning("자막 버튼을 찾을 수 없음")
+            except Exception as e:
+                logger.warning(f"자막 버튼 클릭 실패: {str(e)}")
+            
+            # 자막 설정 메뉴 열기
+            try:
+                # 설정 버튼 클릭
+                logger.info("설정 버튼 찾기...")
+                settings_button = page.locator('.ytp-settings-button')
+                if settings_button.is_visible():
+                    settings_button.click()
+                    time.sleep(random.uniform(0.5, 1.5))
+                    
+                    # 자막 메뉴 항목 찾기
+                    subtitles_menu = page.locator('text=자막')
+                    if not subtitles_menu.is_visible():
+                        subtitles_menu = page.locator('text=Subtitles/CC')
+                    
+                    if subtitles_menu.is_visible():
+                        subtitles_menu.click()
+                        time.sleep(random.uniform(0.5, 1.5))
+                        
+                        # 언어 선택 (여러 가능한 형식 시도)
+                        language_names = {
+                            'ko': ['한국어', 'Korean'],
+                            'en': ['영어', 'English'],
+                            'ja': ['일본어', 'Japanese'],
+                            'zh': ['중국어', 'Chinese']
+                        }
+                        
+                        lang_options = language_names.get(language, [language])
+                        for lang_name in lang_options:
+                            try:
+                                lang_selector = page.locator(f'text={lang_name}')
+                                if lang_selector.is_visible():
+                                    lang_selector.click()
+                                    logger.info(f"언어 선택 성공: {lang_name}")
+                                    break
+                            except:
+                                continue
+                else:
+                    logger.warning("설정 버튼을 찾을 수 없음")
+            except Exception as e:
+                logger.warning(f"자막 설정 메뉴 조작 실패: {str(e)}")
+            
+            # 페이지 스크롤 및 추가 상호작용
+            page.mouse.wheel(0, random.randint(100, 300))
+            time.sleep(random.uniform(1, 3))
+            
+            # 자막 텍스트 추출 (JavaScript 평가)
+            subtitle_text = ""
+            try:
+                logger.info("자막 텍스트 추출 시도...")
+                
+                # 방법 1: 현재 표시된 자막 요소 추출
+                subtitles_js = """
+                () => {
+                    const captionElements = document.querySelectorAll('.ytp-caption-segment');
+                    if (captionElements && captionElements.length > 0) {
+                        return Array.from(captionElements).map(el => el.textContent).join(' ');
+                    }
+                    return '';
+                }
+                """
+                current_caption = page.evaluate(subtitles_js)
+                if current_caption:
+                    subtitle_text += current_caption + "\n"
+                
+                # 방법 2: 비디오 재생하며 자막 수집
+                # 영상 10% 지점부터 시작
+                video_length_js = "() => { return document.querySelector('video').duration; }"
+                video_length = page.evaluate(video_length_js) or 0
+                
+                if video_length > 0:
+                    # 영상 전체 길이의 10% 지점에서 시작
+                    start_time = min(video_length * 0.1, 30)  # 최대 30초
+                    # 최대 3분까지만 수집 (혹은 영상 끝까지)
+                    end_time = min(start_time + 180, video_length)
+                    
+                    # 특정 지점으로 이동
+                    seek_js = f"() => {{ document.querySelector('video').currentTime = {start_time}; }}"
+                    page.evaluate(seek_js)
+                    time.sleep(1)  # 영상 로딩 대기
+                    
+                    # 영상 재생
+                    play_js = "() => { document.querySelector('video').play(); }"
+                    page.evaluate(play_js)
+                    logger.info(f"영상 재생 시작 (자막 수집): {start_time}초부터")
+                    
+                    # 일정 간격으로 자막 수집
+                    collected_captions = set()
+                    collection_start_time = time.time()
+                    
+                    # 최대 30초 동안 자막 수집 (또는 end_time에 도달할 때까지)
+                    while time.time() - collection_start_time < 30:
+                        current_caption = page.evaluate(subtitles_js)
+                        if current_caption and current_caption not in collected_captions:
+                            collected_captions.add(current_caption)
+                            subtitle_text += current_caption + "\n"
+                        
+                        # 현재 재생 위치 확인
+                        current_time_js = "() => { return document.querySelector('video').currentTime; }"
+                        current_time = page.evaluate(current_time_js) or 0
+                        
+                        # end_time에 도달하면 중단
+                        if current_time >= end_time:
+                            break
+                        
+                        time.sleep(0.5)
+                
+                # 수집된 자막이 없거나 매우 짧은 경우 YouTube 트랜스크립트 기능 시도
+                if len(subtitle_text.strip()) < 50:
+                    logger.info("재생 방식으로 충분한 자막을 얻지 못해 트랜스크립트 기능 시도...")
+                    
+                    # 트랜스크립트 버튼 찾기 및 클릭
+                    try:
+                        # 첫 번째: 페이지를 새로고침하고 다시 시도
+                        page.reload(wait_until='networkidle')
+                        time.sleep(3)
+                        
+                        # '...' 버튼 클릭
+                        more_actions = page.locator('[aria-label="추가 작업"]')
+                        if not more_actions.is_visible():
+                            more_actions = page.locator('[aria-label="More actions"]')
+                        
+                        if more_actions.is_visible():
+                            more_actions.click()
+                            time.sleep(1)
+                            
+                            # '스크립트 표시' 또는 'Show transcript' 옵션 찾기
+                            transcript_option = page.locator('text=스크립트 표시')
+                            if not transcript_option.is_visible():
+                                transcript_option = page.locator('text=Show transcript')
+                            
+                            if transcript_option.is_visible():
+                                transcript_option.click()
+                                time.sleep(2)
+                                
+                                # 트랜스크립트 항목 추출
+                                transcript_items_js = """
+                                () => {
+                                    const items = document.querySelectorAll('yt-formatted-string.segment-text');
+                                    return Array.from(items).map(el => el.textContent).join('\\n');
+                                }
+                                """
+                                transcript_text = page.evaluate(transcript_items_js)
+                                if transcript_text:
+                                    subtitle_text = transcript_text
+                    except Exception as e:
+                        logger.warning(f"트랜스크립트 추출 실패: {str(e)}")
+            except Exception as e:
+                logger.error(f"자막 텍스트 추출 실패: {str(e)}")
+            
+            # 쿠키 저장 (다음 실행 시 사용)
+            try:
+                cookies = context.cookies()
+                with open(cookie_file, 'w') as f:
+                    json.dump(cookies, f)
+                logger.info(f"쿠키 저장 완료: {cookie_file}")
+            except Exception as e:
+                logger.warning(f"쿠키 저장 실패: {str(e)}")
+            
+            # 브라우저 종료
+            browser.close()
+            
+            # 자막이 추출되었는지 확인
+            if subtitle_text.strip():
+                logger.info(f"브라우저 방식으로 자막 추출 성공: {len(subtitle_text)} 자")
+                return True, {
+                    'success': True,
+                    'data': {
+                        'text': subtitle_text.strip(),
+                        'subtitles': [],  # 호환성을 위한 빈 배열
+                        'videoInfo': video_info
+                    }
+                }
+            else:
+                logger.error(f"브라우저 방식으로도 자막을 찾을 수 없음: {video_id}")
+                return False, {
+                    'success': False,
+                    'message': f"Could not find captions for video: {video_id} (Browser method failed)"
+                }
+    
+    except Exception as e:
+        logger.error(f"브라우저 자막 추출 과정에서 오류 발생: {str(e)}")
+        return False, {
+            'success': False,
+            'message': f"Error in browser caption extraction: {str(e)}"
+        }
+
+def simulate_human_behavior(page):
+    """
+    실제 사람처럼 브라우저를 조작하는 행동을 시뮬레이션합니다.
+    """
+    # 랜덤 위치로 마우스 이동
+    page.mouse.move(
+        random.randint(100, 800), 
+        random.randint(100, 600)
+    )
+    time.sleep(random.uniform(0.5, 1.5))
+    
+    # 스크롤
+    for _ in range(random.randint(1, 3)):
+        page.mouse.wheel(0, random.randint(100, 300))
+        time.sleep(random.uniform(0.5, 2))
+    
+    # 비디오 영역 클릭 (재생/일시정지)
+    try:
+        video_player = page.locator('.html5-video-player')
+        if video_player.is_visible():
+            # 비디오 플레이어의 중앙 부분 좌표 계산
+            bounding_box = video_player.bounding_box()
+            if bounding_box:
+                center_x = bounding_box['x'] + bounding_box['width'] / 2
+                center_y = bounding_box['y'] + bounding_box['height'] / 2
+                page.mouse.move(center_x, center_y)
+                page.mouse.click(center_x, center_y)
+                time.sleep(random.uniform(1, 3))
+    except Exception as e:
+        logger.warning(f"비디오 플레이어 클릭 실패 (무시): {str(e)}")
+    
+    # 비디오 타임라인에서 랜덤 위치 클릭 (앞쪽 30%로 제한)
+    try:
+        video_timeline = page.locator('.ytp-progress-bar')
+        if video_timeline.is_visible():
+            bounding_box = video_timeline.bounding_box()
+            if bounding_box:
+                timeline_x = bounding_box['x'] + bounding_box['width'] * random.uniform(0.05, 0.3)
+                timeline_y = bounding_box['y'] + bounding_box['height'] / 2
+                page.mouse.move(timeline_x, timeline_y)
+                page.mouse.click(timeline_x, timeline_y)
+                time.sleep(random.uniform(1, 2))
+    except Exception as e:
+        logger.warning(f"타임라인 클릭 실패 (무시): {str(e)}")
 
 def extract_subtitle_text(info: Dict[str, Any], language: str) -> str:
     """
