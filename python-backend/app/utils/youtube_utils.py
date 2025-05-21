@@ -19,6 +19,7 @@ from playwright.async_api import async_playwright
 import io
 import tempfile
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 # 로깅 설정
 logging.basicConfig(
@@ -35,6 +36,281 @@ USE_BROWSER_FALLBACK = True  # yt-dlp 실패 시 Playwright 폴백 사용 여부
 USE_YTDLP_COOKIES = True  # yt-dlp에 쿠키 사용 여부
 USE_TOR_NETWORK = False  # Tor 네트워크 사용 여부 (설치 필요)
 TOR_PROXY = "socks5://127.0.0.1:9050"  # Tor 프록시 주소 (기본값)
+USE_PROXIES = False  # 프록시 사용 여부 - 기본값 false로 변경
+
+# 프록시 관련 상수
+MAX_WORKERS = 10  # 프록시 테스트용 최대 워커 수
+BLACKLISTED_PROXY_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "blacklisted_proxies.txt")
+WORKING_PROXY_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "working_proxies.txt")
+
+# 필요한 디렉토리 생성
+os.makedirs(os.path.dirname(BLACKLISTED_PROXY_PATH), exist_ok=True)
+os.makedirs(os.path.dirname(WORKING_PROXY_PATH), exist_ok=True)
+
+
+class FreeProxyManager:
+    """
+    무료 HTTP 프록시를 관리하는 클래스입니다.
+    작동하는 프록시 목록을 관리하고, 블랙리스트를 유지합니다.
+    싱글톤 패턴으로 구현되어 있어 하나의 인스턴스만 존재합니다.
+    """
+    _instance = None
+    blacklist_file_path = BLACKLISTED_PROXY_PATH
+    working_proxies_file_path = WORKING_PROXY_PATH
+    
+    # 한 번에 테스트할 최대 프록시 수 (성능 최적화)
+    MAX_PROXIES_TO_TEST = 5
+    
+    # 이미 테스트된 프록시 목록
+    tested_proxies = set()
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(FreeProxyManager, cls).__new__(cls)
+            cls._instance.proxies = cls._instance.load_working_proxies()
+            cls._instance.blacklist = cls._instance.load_blacklist()
+            cls._instance.untested_proxies = []  # 테스트되지 않은 프록시 목록
+        return cls._instance
+
+    def load_blacklist(self):
+        """블랙리스트에 등록된 프록시 목록을 로드합니다."""
+        try:
+            with open(self.blacklist_file_path, "r") as file:
+                return set(line.strip() for line in file if line.strip())
+        except FileNotFoundError:
+            return set()
+
+    def save_blacklist(self):
+        """블랙리스트를 파일에 저장합니다."""
+        with open(self.blacklist_file_path, "w") as file:
+            for proxy in self.blacklist:
+                file.write(proxy + "\n")
+
+    def load_working_proxies(self):
+        """작동하는 프록시 목록과 응답 시간을 로드합니다."""
+        try:
+            with open(self.working_proxies_file_path, "r") as file:
+                return [
+                    (line.strip().split(",")[0], float(line.strip().split(",")[1]))
+                    for line in file
+                    if line.strip() and "," in line.strip()
+                ]
+        except (FileNotFoundError, ValueError, IndexError):
+            return []
+
+    def save_working_proxies(self):
+        """작동하는 프록시 목록을 파일에 저장합니다."""
+        with open(self.working_proxies_file_path, "w") as file:
+            for proxy, time_taken in self.proxies:
+                file.write(f"{proxy},{time_taken}\n")
+
+    def fetch_proxy_list(self, url="https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"):
+        """
+        무료 프록시 목록을 가져오고 테스트를 위해 대기열에 추가합니다.
+        프록시 테스트는 시간이 많이 걸리므로 백그라운드에서 점진적으로 수행합니다.
+        """
+        try:
+            logger.info("프록시 목록 가져오기 시작...")
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                # 프록시 목록 파싱
+                proxies = response.text.strip().split('\n')
+                logger.info(f"{len(proxies)}개의 프록시 찾음")
+                
+                # 이미 블랙리스트에 있는 프록시 제외
+                filtered_proxies = [p for p in proxies if p not in self.blacklist]
+                logger.info(f"{len(filtered_proxies)}개의 프록시 테스트 예정 (블랙리스트 제외)")
+                
+                # 테스트할 프록시 대기열 설정 (테스트는 필요할 때만 수행)
+                self.untested_proxies = filtered_proxies
+                
+                # 간단한 건강 검사만 수행 (실제 테스트는 필요할 때 수행)
+                return True
+            else:
+                logger.error(f"프록시 목록 가져오기 실패: HTTP {response.status_code}")
+                return False
+        except Exception as e:
+            logger.error(f"프록시 목록 가져오기 오류: {str(e)}")
+            return False
+
+    def test_proxy_batch(self):
+        """
+        프록시 배치를 테스트합니다.
+        작은 배치로 나누어 테스트하여 시스템 부하를 최소화합니다.
+        """
+        if not hasattr(self, 'untested_proxies') or not self.untested_proxies:
+            logger.info("테스트할 프록시 없음. 새 프록시 목록을 가져옵니다.")
+            self.fetch_proxy_list()
+            if not self.untested_proxies:
+                return False
+        
+        # 작은 배치만 테스트
+        batch_size = min(self.MAX_PROXIES_TO_TEST, len(self.untested_proxies))
+        batch = self.untested_proxies[:batch_size]
+        self.untested_proxies = self.untested_proxies[batch_size:]
+        
+        if not batch:
+            logger.warning("테스트할 프록시 배치 없음")
+            return False
+        
+        logger.info(f"{len(batch)}개 프록시 테스트 중...")
+        
+        # 적은 수의 작업자로 병렬 테스트 (자원 사용 최소화)
+        max_workers = min(3, len(batch))  # 최대 3개 작업자만 사용
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 프록시 테스트 결과 처리
+            results = list(executor.map(self._test_proxy, batch))
+            
+            # 작동하는 프록시 추가
+            working_proxies = [proxy for proxy, is_working in zip(batch, results) if is_working]
+            if working_proxies:
+                self.proxies.extend([(proxy, time.time()) for proxy in working_proxies])
+                logger.info(f"{len(working_proxies)}개의 새 작동 프록시 추가됨")
+                self.save_working_proxies()
+            
+            # 테스트된 프록시 표시
+            self.tested_proxies.update(batch)
+            
+            return len(working_proxies) > 0
+
+    def update_proxy_list(self):
+        """
+        프록시 목록을 업데이트합니다.
+        처음에는 작은 배치만 테스트하고, 나머지는 필요할 때 테스트합니다.
+        """
+        # 프록시 가져오기
+        if not hasattr(self, 'untested_proxies') or not self.untested_proxies:
+            self.fetch_proxy_list()
+        
+        # 처음에는 작은 배치만 테스트 (최대 5개)
+        self.test_proxy_batch()
+        
+        # 로깅
+        logger.info(f"사용 가능한 프록시: {len(self.proxies)}개")
+        return len(self.proxies) > 0
+
+    def get_proxy(self):
+        """
+        가장 빠른 응답 시간을 가진 프록시를 반환합니다.
+        필요한 경우 추가 프록시를 테스트합니다.
+        """
+        # 작동하는 프록시가 없으면 소량 테스트
+        if not self.proxies:
+            logger.info("작동하는 프록시가 없습니다. 소량 테스트를 시작합니다.")
+            self.test_proxy_batch()
+            
+        if self.proxies:
+            # 가장 빠른 프록시 사용 (정렬된 목록의 첫 번째)
+            fastest_proxy, fastest_time = self.proxies[0]
+            logger.info(f"가장 빠른 프록시 사용: {fastest_proxy} (응답 시간: {fastest_time:.2f}초)")
+            return {
+                "http": f"http://{fastest_proxy}",
+                "https": f"http://{fastest_proxy}",
+            }
+        else:
+            logger.warning("작동하는 프록시를 찾을 수 없습니다.")
+            return None
+
+    def get_random_proxy(self):
+        """
+        가중치 기반으로 랜덤 프록시를 선택합니다.
+        필요한 경우 추가 프록시를 테스트합니다.
+        """
+        # 작동하는 프록시가 없으면 소량 테스트
+        if not self.proxies:
+            logger.info("작동하는 프록시가 없습니다. 소량 테스트를 시작합니다.")
+            self.test_proxy_batch()
+            
+        if self.proxies:
+            # 단순 랜덤 선택 (가중치 계산은 비용이 큼)
+            selected_proxy, _ = random.choice(self.proxies)
+            logger.info(f"랜덤 프록시 선택: {selected_proxy}")
+            return {
+                "http": f"http://{selected_proxy}",
+                "https": f"http://{selected_proxy}",
+            }
+        else:
+            logger.warning("작동하는 프록시를 찾을 수 없습니다.")
+            return None
+
+    def remove_and_update_proxy(self, non_functional_proxy):
+        """
+        작동하지 않는 프록시를 제거하고 블랙리스트에 추가합니다.
+        필요한 경우 추가 프록시를 테스트합니다.
+        """
+        # 프록시 주소 추출 (일관된 처리를 위해)
+        if isinstance(non_functional_proxy, dict) and "http" in non_functional_proxy:
+            non_functional_proxy_address = non_functional_proxy["http"].split("//")[1]
+        elif isinstance(non_functional_proxy, str):
+            non_functional_proxy_address = non_functional_proxy.replace("http://", "").replace("https://", "")
+        else:
+            logger.error(f"잘못된 프록시 형식: {non_functional_proxy}")
+            return
+
+        # 작동하지 않는 프록시 제거 및 블랙리스트 업데이트
+        self.proxies = [
+            proxy for proxy in self.proxies if proxy[0] != non_functional_proxy_address
+        ]
+        self.blacklist.add(non_functional_proxy_address)
+        self.tested_proxies.add(non_functional_proxy_address)
+        self.save_blacklist()
+        self.save_working_proxies()
+        logger.info(f"작동하지 않는 프록시 제거: {non_functional_proxy_address}")
+
+        # 프록시 수가 적으면 추가 배치 테스트
+        if len(self.proxies) < 3:
+            logger.info("프록시 수가 부족합니다. 추가 배치 테스트 시작...")
+            self.test_proxy_batch()
+
+    def _test_proxy(self, proxy):
+        """
+        단일 프록시를 테스트합니다.
+        빠른 테스트를 위해 타임아웃을 짧게 설정합니다.
+        """
+        try:
+            http_proxy = f"http://{proxy}"
+            proxies = {
+                "http": http_proxy,
+                "https": http_proxy
+            }
+            
+            # 간단한 테스트 URL (빠른 응답)
+            test_url = "http://www.google.com"
+            
+            # 짧은 타임아웃으로 빠른 확인
+            response = requests.get(
+                test_url, 
+                proxies=proxies, 
+                timeout=3.0,  # 3초 타임아웃 (더 빠른 테스트)
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
+            )
+            
+            # 응답 상태 확인
+            return response.status_code == 200
+        
+        except Exception as e:
+            # 실패한 프록시 무시 (로깅하지 않음)
+            return False
+
+
+# 프록시 매니저 인스턴스 생성
+proxy_manager = FreeProxyManager()
+
+def get_random_proxy():
+    """
+    랜덤 프록시를 반환합니다.
+    작동하는 프록시가 없으면 None을 반환합니다.
+    참고: 이 함수는 30% 확률로 프록시를 사용하지 않도록 None을 반환할 수 있습니다.
+    """
+    if not USE_PROXIES or random.random() < 0.3:  # 30% 확률로 프록시 사용하지 않음
+        return None
+    
+    try:
+        proxy_manager = FreeProxyManager()
+        return proxy_manager.get_proxy()
+    except Exception as e:
+        logger.warning(f"프록시 가져오기 실패: {str(e)}")
+        return None
 
 def extract_video_id(url: str) -> Optional[str]:
     """
@@ -272,39 +548,39 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
     
     # 시도 순서는 성공 가능성이 높은 것부터 차례로
     extraction_methods = [
-        # 새로운 방법: undetected_chromedriver (가장 효과적인 봇 감지 회피)
-        {
-            "name": "undetected_chromedriver",
-            "func": extract_subtitles_with_undetected_chrome,
-            "args": [video_id, language, video_info],
-            "condition": UNDETECTED_CHROME_AVAILABLE  # 설치된 경우에만 실행
-        },
-        # 1단계: YouTube Transcript API
+        # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
         {
             "name": "YouTube Transcript API",
             "func": extract_subtitles_with_transcript_api,
             "args": [video_id, language, video_info]
         },
-        # 2단계: 외부 API 방식 시도
+        # 2단계: 외부 API 방식 시도 (빠르고 안정적)
         {
             "name": "외부 API 서비스",
             "func": extract_subtitles_with_external_api,
             "args": [video_id, language, video_info]
         },
-        # 3단계: 웹 스크래핑 방식 시도
+        # 3단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
         {
             "name": "웹 스크래핑",
             "func": extract_subtitles_with_scraping,
             "args": [video_id, language, video_info]
         },
-        # 4단계: 브라우저 방식 시도 (설정에 따라)
+        # 4단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
+        {
+            "name": "undetected_chromedriver",
+            "func": extract_subtitles_with_undetected_chrome,
+            "args": [video_id, language, video_info],
+            "condition": UNDETECTED_CHROME_AVAILABLE and random.random() < 0.7  # 70% 확률로만 시도
+        },
+        # 5단계: 일반 브라우저 방식 시도
         {
             "name": "브라우저 자동화",
             "func": extract_subtitles_with_browser,
             "args": [video_id, language, video_info],
             "condition": USE_BROWSER_FIRST  # 환경설정에 따라 실행 여부 결정
         },
-        # 5단계: yt-dlp로 시도 (마지막 수단)
+        # 6단계: yt-dlp로 시도 (마지막 수단)
         {
             "name": "yt-dlp",
             "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
@@ -482,6 +758,17 @@ async def extract_subtitles_with_browser(video_id: str, language: str, video_inf
     
     try:
         async with async_playwright() as p:
+            # 프록시 설정 (선택적)
+            proxy_info = None
+            if USE_PROXIES:
+                proxy_dict = proxy_manager.get_proxy()
+                if proxy_dict and 'http' in proxy_dict:
+                    proxy_server = proxy_dict['http'].replace('http://', '')
+                    logger.info(f"Playwright에 프록시 적용: {proxy_server}")
+                    proxy_info = {
+                        "server": proxy_server
+                    }
+            
             # 브라우저 시작 (특정 환경에서는 headless=False 사용)
             # 클라우드 환경에서는 headless=True만 지원할 수 있으므로 조건부로 설정
             use_headless = True  # 서버 환경 기본값
@@ -503,7 +790,8 @@ async def extract_subtitles_with_browser(video_id: str, language: str, video_inf
                 headless=use_headless, 
                 args=browser_args, 
                 slow_mo=random.randint(50, 150),  # 브라우저 작업 속도 무작위화
-                downloads_path="/tmp/playwright_downloads"
+                downloads_path="/tmp/playwright_downloads",
+                proxy=proxy_info
             )
             
             # 브라우저 컨텍스트 생성 (고급 설정)
@@ -745,30 +1033,43 @@ async def extract_subtitles_with_browser(video_id: str, language: str, video_inf
                                 try:
                                     # URL에 format=json3 추가
                                     caption_url = f"{base_url}&fmt=json3"
-                                    async with session.get(caption_url, timeout=10) as response:
+                                    
+                                    # 프록시 설정 (선택적)
+                                    proxy_for_request = None
+                                    if USE_PROXIES and random.random() > 0.5:  # 50% 확률로 프록시 사용
+                                        proxy_dict = proxy_manager.get_proxy()
+                                        if proxy_dict and 'http' in proxy_dict:
+                                            proxy_for_request = proxy_dict['http']
+                                            logger.info(f"자막 데이터 요청에 프록시 사용: {proxy_for_request}")
+                                    
+                                    async with session.get(
+                                        caption_url, 
+                                        timeout=10, 
+                                        proxy=proxy_for_request,
+                                        ssl=False,
+                                        headers={
+                                            'User-Agent': get_random_browser_fingerprint(),
+                                            'Referer': f"https://www.youtube.com/watch?v={video_id}",
+                                            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+                                        }
+                                    ) as response:
                                         if response.status == 200:
-                                            caption_json = await response.json()
+                                            caption_data = await response.json()
                                             
-                                            # JSON 형식 자막을 텍스트로 변환
-                                            subtitle_text = ""
-                                            if 'events' in caption_json:
-                                                for event in caption_json['events']:
+                                            # JSON 형식 자막 처리
+                                            if 'events' in caption_data:
+                                                subtitle_lines = []
+                                                for event in caption_data['events']:
                                                     if 'segs' in event:
+                                                        line = ""
                                                         for seg in event['segs']:
                                                             if 'utf8' in seg:
-                                                                subtitle_text += seg['utf8'] + " "
-                                                        subtitle_text += "\n"
+                                                                line += seg['utf8']
+                                                        if line.strip():
+                                                            subtitle_lines.append(line.strip())
                                             
-                                            if subtitle_text:
-                                                logger.info(f"브라우저 방식으로 자막 추출 성공: {video_id}")
-                                                return True, {
-                                                    'success': True,
-                                                    'data': {
-                                                        'text': subtitle_text,
-                                                        'subtitles': [],
-                                                        'videoInfo': video_info
-                                                    }
-                                                }
+                                            subtitle_text = '\n'.join(subtitle_lines)
+                                            logger.info(f"JSON 형식 자막 추출 성공: {len(subtitle_text)} 자")
                                 except Exception as e:
                                     logger.error(f"자막 데이터 요청 중 오류: {str(e)}")
             
@@ -1327,7 +1628,10 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
     if USE_PROXIES:
         proxy = get_random_proxy()
         if proxy:
-            options['proxy'] = proxy
+            if 'http' in proxy:
+                options['proxy'] = proxy['http']
+            elif isinstance(proxy, str):
+                options['proxy'] = proxy
     
     # 쿠키 설정 추가
     if cookie_file:
@@ -1676,7 +1980,7 @@ async def extract_subtitles_with_external_api(video_id: str, language: str, vide
                         async with session.get(
                             api["url"], 
                             headers=api["headers"], 
-                            proxy=proxy, 
+                            proxy=proxy['http'] if proxy and 'http' in proxy else None, 
                             timeout=30,
                             ssl=False
                         ) as response:
@@ -1701,7 +2005,7 @@ async def extract_subtitles_with_external_api(video_id: str, language: str, vide
                             api["url"], 
                             headers=api["headers"], 
                             json=api["data"],
-                            proxy=proxy, 
+                            proxy=proxy['http'] if proxy and 'http' in proxy else None, 
                             timeout=30,
                             ssl=False
                         ) as response:
@@ -1761,6 +2065,7 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
     
     # 비동기 실행을 위한 래퍼 함수
     def _extract_with_uc():
+        browser = None
         try:
             # 브라우저 옵션 설정
             options = uc.ChromeOptions()
@@ -1770,42 +2075,106 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
             options.add_argument("--lang=ko-KR")  # 한국어 설정
             
             # 헤드리스 모드 (서버 환경에서 필요)
-            options.add_argument("--headless=new")  # 새로운 헤드리스 모드
-            
+            is_headless = not "DISPLAY" in os.environ or random.random() < 0.7  # 70% 확률로 헤드리스 모드 사용
+            if is_headless:
+                options.add_argument("--headless=new")  # 새로운 헤드리스 모드
+
             # 랜덤 사용자 에이전트
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
-            ]
-            options.add_argument(f"--user-agent={random.choice(user_agents)}")
+            user_agent = get_random_headers().get("User-Agent")
+            options.add_argument(f"--user-agent={user_agent}")
             
             # 추가 위장 옵션
             options.add_argument("--disable-blink-features=AutomationControlled")
             
             # 개발자 도구 브레이크포인트 우회
-            # (debugger 감지 피하기)
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option("useAutomationExtension", False)
             
+            # 프록시 설정 (기본적으로 비활성화)
+            proxy = None
+            if USE_PROXIES and random.random() < 0.3:  # 30% 확률로만 프록시 사용
+                proxy_dict = get_random_proxy()
+                if proxy_dict and 'http' in proxy_dict:
+                    proxy = proxy_dict['http'].replace('http://', '')
+                    logger.info(f"undetected_chromedriver에 프록시 적용: {proxy}")
+                    options.add_argument(f'--proxy-server={proxy}')
+            
+            # 브라우저 생성 (최대 2회 시도)
             # 브라우저 생성
             browser = uc.Chrome(options=options)
             
             # 인간처럼 창 크기 설정
             browser.set_window_size(random.randint(1050, 1920), random.randint(800, 1080))
             
-            # 쿠키 설정
-            browser.get("https://www.youtube.com")
-            
-            # 자연스러운 대기
-            time.sleep(random.uniform(2, 4))
-            
-            # YouTube 동영상 페이지 접속
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-            browser.get(video_url)
+            # 쿠키 설정 및 페이지 로딩
+            try:
+                browser.get("https://www.youtube.com")
+                time.sleep(random.uniform(2, 4))
+                
+                # YouTube 동영상 페이지 접속
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                browser.get(video_url)
+            except Exception as e:
+                logger.warning(f"초기 페이지 접속 실패: {str(e)}")
+                
+                # 브라우저 닫기
+                try: 
+                    browser.quit() 
+                except: 
+                    pass
+                
+                # 프록시가 원인인 경우 프록시 제거
+                if proxy:
+                    proxy_manager.remove_and_update_proxy(proxy)
+                    logger.info("프록시 문제 감지, 프록시 없이 재시도합니다.")
+                    
+                    # 프록시 없이 새 옵션 생성
+                    options = uc.ChromeOptions()
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--no-sandbox")
+                    options.add_argument("--disable-dev-shm-usage")
+                    options.add_argument("--lang=ko-KR")
+                    options.add_argument("--headless=new")
+                    options.add_argument(f"--user-agent={random.choice(user_agents)}")
+                    options.add_argument("--disable-blink-features=AutomationControlled")
+                    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                    options.add_experimental_option("useAutomationExtension", False)
+                
+                # 다시 시도
+                browser = uc.Chrome(options=options)
+                browser.set_window_size(random.randint(1050, 1920), random.randint(800, 1080))
+                
+                # 다시 페이지 접속
+                browser.get("https://www.youtube.com")
+                time.sleep(random.uniform(2, 4))
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                browser.get(video_url)
+            except Exception as e:
+                logger.error(f"초기 페이지 접속 실패: {str(e)}")
+                if proxy:
+                    # 프록시 문제인 경우 해당 프록시 블랙리스트에 추가
+                    proxy_manager.remove_and_update_proxy(proxy)
+                    logger.info("프록시를 블랙리스트에 추가하고 브라우저를 다시 시작합니다.")
+                    browser.quit()
+                    # 새로운 프록시로 다시 시도
+                    return _extract_with_uc()
+                else:
+                    # 프록시 없이 다시 시도
+                    browser.quit()
+                    options.arguments.remove("--proxy-server=" + proxy) if proxy else None
+                    browser = uc.Chrome(options=options)
             
             # 페이지 로딩 대기
             time.sleep(random.uniform(3, 5))
+            
+            # 인간처럼 행동 시뮬레이션
+            try:
+                # 랜덤한 마우스 움직임
+                for _ in range(random.randint(2, 5)):
+                    browser.execute_script(f"window.scrollTo(0, {random.randint(100, 500)});")
+                    time.sleep(random.uniform(0.3, 1.2))
+            except:
+                pass
             
             # 비디오 정보 추출
             try:
@@ -1966,7 +2335,21 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
                             'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
                         }
                         
-                        response = requests.get(caption_url, headers=headers, timeout=10)
+                        # 프록시 사용 여부 결정
+                        use_proxy = False
+                        req_proxy = None
+                        if USE_PROXIES and random.random() > 0.5:  # 50% 확률로 프록시 사용
+                            req_proxy = proxy_manager.get_proxy()
+                            if req_proxy:
+                                use_proxy = True
+                                logger.info(f"자막 데이터 요청에 프록시 사용: {req_proxy}")
+                        
+                        response = requests.get(
+                            caption_url, 
+                            headers=headers, 
+                            proxies=req_proxy if use_proxy else None,
+                            timeout=10
+                        )
                         
                         if response.status_code == 200:
                             caption_data = response.json()
@@ -1985,6 +2368,11 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
                                 
                                 subtitle_text = '\n'.join(subtitle_lines)
                                 logger.info(f"JSON 형식 자막 추출 성공: {len(subtitle_text)} 자")
+                        else:
+                            logger.warning(f"자막 요청 실패: 상태 코드 {response.status_code}")
+                            if use_proxy and req_proxy:
+                                # 프록시 문제인 경우 블랙리스트에 추가
+                                proxy_manager.remove_and_update_proxy(req_proxy)
                     except Exception as e:
                         logger.error(f"자막 URL 요청 실패: {str(e)}")
             
