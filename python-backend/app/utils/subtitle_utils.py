@@ -85,10 +85,13 @@ def enhance_subtitle_items(subtitles: List[SubtitleItem]) -> List[SubtitleItem]:
         enhanced_item = {
             **item,
             "text": decode_html_entities(item["text"]),
-            "startFormatted": format_time(start),
             "end": start + dur,
             "duration": item["dur"]  # duration 필드 추가 (dur과 같은 값)
         }
+        
+        # startFormatted가 없을 경우에만 추가
+        if "startFormatted" not in item:
+            enhanced_item["startFormatted"] = format_time(start)
         
         result.append(enhanced_item)
     
@@ -125,6 +128,9 @@ def extract_subtitle_items_from_xml(xml_content: str) -> List[SubtitleItem]:
             start = start_match.group(1)
             dur = dur_match.group(1)
             
+            # 시간을 "00:00" 형식으로 포맷팅
+            start_formatted = format_time(float(start))
+            
             # 텍스트 추출 및 태그 제거
             text = re.sub(r'<text[^>]*>', '', line)
             text = re.sub(r'<[^>]+>', '', text)  # 나머지 HTML 태그 제거
@@ -133,6 +139,7 @@ def extract_subtitle_items_from_xml(xml_content: str) -> List[SubtitleItem]:
                 "start": start,
                 "dur": dur,
                 "duration": dur,  # duration 필드 추가
+                "startFormatted": start_formatted,  # startFormatted 필드 추가
                 "text": text
             })
     
@@ -159,6 +166,9 @@ def extract_subtitle_items_from_json(json_data: Dict[str, Any]) -> List[Subtitle
             # 지속 시간 (없으면 2초 기본값)
             dur = str((event.get("dDurationMs", 2000)) / 1000)
             
+            # 시간을 "00:00" 형식으로 포맷팅
+            start_formatted = format_time(float(start))
+            
             # 텍스트 추출 (세그먼트 결합)
             text = ""
             if "segs" in event:
@@ -171,6 +181,7 @@ def extract_subtitle_items_from_json(json_data: Dict[str, Any]) -> List[Subtitle
                     "start": start,
                     "dur": dur,
                     "duration": dur,  # duration 필드 추가
+                    "startFormatted": start_formatted,  # startFormatted 필드 추가
                     "text": text.strip()
                 })
     
@@ -189,11 +200,17 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
     subtitle_items = []
     
     for item in transcript_data:
+        start = item.get("start", 0)
         dur = str(item.get("duration", 2))  # 기본 지속 시간 2초
+        
+        # 시간을 "00:00" 형식으로 포맷팅
+        start_formatted = format_time(float(start))
+        
         subtitle_items.append({
-            "start": str(item.get("start", 0)),
+            "start": str(start),
             "dur": dur,
             "duration": dur,  # duration 필드 추가
+            "startFormatted": start_formatted,  # startFormatted 필드 추가
             "text": item.get("text", "")
         })
     
@@ -249,14 +266,18 @@ def process_subtitles(subtitle_text: str, format_type: str = "text") -> Dict[str
                 start = i * 3
                 dur = "3"  # 기본 지속 시간 3초
                 
+                # 시간을 "00:00" 형식으로 포맷팅
+                start_formatted = format_time(float(start))
+                
                 subtitle_items.append({
                     "start": str(start),
                     "dur": dur,
                     "duration": dur,  # duration 필드 추가
+                    "startFormatted": start_formatted,  # startFormatted 필드 추가
                     "text": line
                 })
             
-            result["subtitles"] = enhance_subtitle_items(subtitle_items)
+            result["subtitles"] = subtitle_items  # 이미 형식이 맞으므로 enhance_subtitle_items 호출 불필요
     
     except Exception as e:
         # 오류 발생 시 기본 텍스트 반환
