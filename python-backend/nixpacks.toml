@@ -1,11 +1,11 @@
 [phases.setup]
-nixPkgs = ["python3", "gcc"]
+nixPkgs = ["python311", "python311Packages.pip", "gcc"] # 최신 Python 버전 명시
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = ["pip install --upgrade pip", "pip install -r requirements.txt"]
 
 [phases.build]
 cmds = []
 
 [start]
-cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT" 
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
