@@ -8,9 +8,9 @@ from typing import Dict, Any, Optional, List, Tuple
 import subprocess
 import json
 import yt_dlp
+import urllib.parse
 
 from ..utils.youtube_utils import (
-    extract_video_id,
     get_video_info,
     get_subtitles
 )
@@ -29,36 +29,61 @@ class SubtitleService:
     
     async def get_video_info(self, video_id: str) -> Dict[str, Any]:
         """
-        비디오 정보를 가져옵니다.
+        비디오 ID를 이용해 YouTube 비디오 정보를 가져옵니다.
         """
-        logger.info(f"비디오 정보 요청: {video_id}")
-        video_info = get_video_info(video_id)
-        
-        # Node.js 백엔드와 형식 통일
-        # videoId 필드를 별도로 추가
-        if 'videoId' not in video_info:
-            video_info['videoId'] = video_id
-        
-        # 언어 정보 형식 통일
-        if 'availableLanguages' in video_info and video_info['availableLanguages']:
-            # 이미 올바른 형식이면 유지
-            if not isinstance(video_info['availableLanguages'], list):
-                video_info['availableLanguages'] = []
-        else:
-            # 기본 언어 설정
-            video_info['availableLanguages'] = [
-                {"code": "ko", "name": "한국어"},
-                {"code": "en", "name": "영어"}
-            ]
-        
-        return video_info
+        try:
+            self.logger.info(f"비디오 정보 요청 - 비디오 ID: {video_id}")
+            
+            # 비디오 정보 가져오기
+            result = get_video_info(video_id)
+            
+            # 비디오 ID 포함 여부 확인 및 추가
+            if result and 'videoId' not in result:
+                result['videoId'] = video_id
+                
+            # availableLanguages 형식 확인 및 리스트로 변환
+            if result and 'availableLanguages' in result:
+                if not result['availableLanguages']:
+                    # 기본 언어 설정 (한국어, 영어)
+                    result['availableLanguages'] = [
+                        {"code": "ko", "name": "한국어"},
+                        {"code": "en", "name": "영어"}
+                    ]
+                elif isinstance(result['availableLanguages'], list):
+                    # 이미 리스트인 경우 그대로 사용
+                    pass
+                else:
+                    # 객체인 경우 리스트로 변환
+                    try:
+                        avail_langs = result['availableLanguages']
+                        result['availableLanguages'] = [
+                            {"code": lang, "name": name} 
+                            for lang, name in avail_langs.items()
+                        ]
+                    except:
+                        # 변환 실패 시 기본 언어 설정
+                        result['availableLanguages'] = [
+                            {"code": "ko", "name": "한국어"},
+                            {"code": "en", "name": "영어"}
+                        ]
+            
+            return result
+        except Exception as e:
+            self.logger.error(f"비디오 정보 가져오기 오류: {str(e)}")
+            # 기본 비디오 정보 반환
+            return {
+                'title': f"Video {video_id}", 
+                'channelName': "Unknown Channel",
+                'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                'videoId': video_id
+            }
     
     async def get_subtitles(self, url: str, language: str = "ko") -> Dict[str, Any]:
         """
         지정된 URL과 언어로 YouTube 자막을 가져옵니다.
         """
         # 비디오 ID 추출
-        video_id = extract_video_id(url)
+        video_id = self.extract_video_id(url)
         if not video_id:
             logger.error(f"유효하지 않은 YouTube URL: {url}")
             return {
@@ -91,109 +116,74 @@ class SubtitleService:
         yt-dlp API를 사용하여 자막을 추출합니다.
         """
         logger.info(f"yt-dlp API 방식으로 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
-        success, result = get_subtitles(video_id, language)
         
-        if success:
-            # 비디오 정보에 videoId 추가
-            if 'data' in result and 'videoInfo' in result['data']:
-                result['data']['videoInfo']['videoId'] = video_id
-                
-            # subtitles 필드 추가 (Node.js API와 호환성을 위해)
-            if 'data' in result:
-                if 'subtitles' not in result['data']:
-                    result['data']['subtitles'] = []
-                
-            logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
-        else:
-            logger.warning(f"yt-dlp API 방식으로 자막 추출 실패: {video_id}")
+        try:
+            # 비동기 함수를 호출
+            success, result = await get_subtitles(video_id, language)
             
-        return success, result
+            if success:
+                # 비디오 정보에 videoId 추가
+                if 'data' in result and 'videoInfo' in result['data']:
+                    result['data']['videoInfo']['videoId'] = video_id
+                    
+                # subtitles 필드 추가 (Node.js API와 호환성을 위해)
+                if 'data' in result:
+                    if 'subtitles' not in result['data']:
+                        result['data']['subtitles'] = []
+                    
+                logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
+            else:
+                logger.warning(f"yt-dlp API 방식으로 자막 추출 실패: {video_id}")
+                
+            return success, result
+        except Exception as e:
+            logger.error(f"yt-dlp API 사용 중 예외 발생: {str(e)}")
+            return False, {
+                "success": False, 
+                "message": f"Error during subtitle extraction: {str(e)}"
+            }
     
     async def get_subtitles_with_file(self, video_id: str, language: str) -> Tuple[bool, Dict[str, Any]]:
         """
-        파일 기반 방식으로 자막을 추출합니다.
-        임시 파일에 자막을 저장하고 이를 읽어 처리합니다.
+        파일 기반 방식으로 자막 추출을 시도합니다.
+        마지막 대안으로 사용됩니다.
         """
-        logger.info(f"파일 기반 방식으로 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            try:
-                # 자막 파일명 설정
-                subtitle_filename = os.path.join(temp_dir, f"{video_id}.{language}")
-                
-                # yt-dlp 명령 실행
-                cmd = [
-                    'yt-dlp',
-                    '--skip-download',
-                    '--write-sub',
-                    '--write-auto-sub',
-                    f'--sub-lang={language},en',
-                    f'--output={subtitle_filename}',
-                    f'https://www.youtube.com/watch?v={video_id}'
-                ]
-                
-                logger.info(f"yt-dlp 명령 실행: {' '.join(cmd)}")
-                process = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                
-                if process.returncode != 0:
-                    logger.error(f"yt-dlp 명령 실패: {process.stderr}")
-                    return False, {"success": False, "message": "자막 추출 중 오류가 발생했습니다."}
-                
-                # 생성된 자막 파일 찾기
-                subtitle_files = [
-                    f for f in os.listdir(temp_dir) 
-                    if f.startswith(os.path.basename(subtitle_filename)) and 
-                    (f.endswith('.vtt') or f.endswith('.srt'))
-                ]
-                
-                if not subtitle_files:
-                    logger.error(f"자막 파일을 찾을 수 없음: {temp_dir}")
-                    return False, {"success": False, "message": "자막 파일을 찾을 수 없습니다."}
-                
-                # 첫 번째 자막 파일 사용
-                subtitle_file = os.path.join(temp_dir, subtitle_files[0])
-                logger.info(f"자막 파일 발견: {subtitle_file}")
-                
-                # 자막 파일 읽기
+        try:
+            self.logger.info(f"파일 기반 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
+            
+            # 비디오 정보 가져오기
+            video_info = self.get_video_info(video_id)
+            if not video_info:
+                return False, {'message': 'Failed to get video info'}
+            
+            # 자막 파일 경로
+            subtitle_file = f"{video_id}_{language}.txt"
+            
+            # 자막 파일 존재 여부 확인
+            if os.path.exists(subtitle_file):
+                self.logger.info(f"기존 자막 파일 사용: {subtitle_file}")
                 with open(subtitle_file, 'r', encoding='utf-8') as f:
-                    subtitle_content = f.read()
+                    subtitle_text = f.read()
                 
-                # 자막 내용 파싱 (파일 형식에 따라 다르게 처리 필요)
-                subtitle_text = self.parse_subtitle_file(subtitle_file, subtitle_content)
-                
-                if not subtitle_text:
-                    logger.error("자막 내용을 파싱할 수 없습니다.")
-                    return False, {"success": False, "message": "자막 내용을 파싱할 수 없습니다."}
-                
-                # 비디오 정보 가져오기
-                video_info = await self.get_video_info(video_id)
-                
-                # 자막 항목 생성 시도 (Node.js 백엔드와 형식 통일을 위해)
-                subtitles = []
-                
-                logger.info(f"파일 기반 방식으로 자막 추출 성공: {video_id}")
-                return True, {
-                    "success": True,
-                    "data": {
-                        "text": subtitle_text,
-                        "subtitles": subtitles,  # Node.js 백엔드와 호환성을 위해
-                        "videoInfo": {
-                            "title": video_info.get("title", ""),
-                            "channelName": video_info.get("channelName", ""),
-                            "thumbnailUrl": video_info.get("thumbnailUrl", ""),
-                            "videoId": video_id
-                        }
+                # 응답 데이터 구성
+                result = {
+                    'text': subtitle_text,
+                    'subtitles': [],  # Node.js 백엔드와 호환성을 위해 빈 배열 포함
+                    'videoInfo': {
+                        'title': video_info.get('title', f"Video {video_id}"),
+                        'channelName': video_info.get('channelName', 'Unknown Channel'),
+                        'thumbnailUrl': video_info.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                        'videoId': video_id  # 비디오 ID 포함
                     }
                 }
+                return True, result
+            else:
+                self.logger.warning(f"자막 파일을 찾을 수 없음: {subtitle_file}")
+                return False, {'message': f"Subtitle file not found for video: {video_id}"}
                 
-            except Exception as e:
-                logger.exception(f"파일 기반 자막 추출 중 오류: {str(e)}")
-                return False, {"success": False, "message": str(e)}
+        except Exception as e:
+            self.logger.error(f"파일 기반 자막 추출 오류: {str(e)}")
+            return False, {'message': str(e)}
     
     def parse_subtitle_file(self, file_path: str, content: str) -> str:
         """
@@ -255,4 +245,40 @@ class SubtitleService:
             # 텍스트 줄 추가
             text_lines.append(line.strip())
         
-        return '\n'.join(text_lines) 
+        return '\n'.join(text_lines)
+
+    def extract_video_id(self, url: str) -> Optional[str]:
+        """
+        YouTube URL에서 비디오 ID를 추출합니다.
+        다양한 YouTube URL 형식을 지원합니다.
+        
+        지원하는 형식:
+        - https://www.youtube.com/watch?v=VIDEO_ID
+        - https://youtu.be/VIDEO_ID
+        - https://www.youtube.com/embed/VIDEO_ID
+        - https://m.youtube.com/watch?v=VIDEO_ID
+        """
+        try:
+            # URL 파싱
+            parsed_url = urllib.parse.urlparse(url)
+            
+            # youtu.be 형식
+            if parsed_url.netloc == 'youtu.be':
+                return parsed_url.path.lstrip('/')
+            
+            # youtube.com 형식
+            if 'youtube.com' in parsed_url.netloc or 'youtube-nocookie.com' in parsed_url.netloc:
+                if '/embed/' in parsed_url.path:
+                    return parsed_url.path.split('/embed/')[1].split('/')[0].split('?')[0]
+                
+                if '/watch' in parsed_url.path:
+                    query = urllib.parse.parse_qs(parsed_url.query)
+                    if 'v' in query:
+                        return query['v'][0]
+            
+            self.logger.warning(f"지원되지 않는 YouTube URL 형식: {url}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"URL에서 비디오 ID 추출 중 오류: {str(e)}")
+            return None 

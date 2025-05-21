@@ -248,7 +248,7 @@ async def root():
 
 @app.post(
     "/api/subtitles", 
-    tags=["자막"], 
+    tags=["자막"],
     response_model=SubtitleResponse,
     responses={
         200: {
@@ -284,21 +284,57 @@ async def get_subtitles(
     request: SubtitleRequest = Body(..., examples=examples)
 ):
     """
-    YouTube 동영상의 자막을 추출합니다.
+    YouTube 자막 추출 API 엔드포인트
     
-    - **url**: YouTube 동영상 URL
-    - **language**: 자막 언어 코드 (기본값: ko)
-    
-    반환값은 자막 텍스트와 비디오 정보를 포함합니다.
+    이 함수는 YouTube URL과 언어 코드를 받아 해당 비디오의 자막을 추출합니다.
+    여러 방식(API, 브라우저, yt-dlp)을 사용해 자막을 가져오며, 
+    모든 방식이 실패할 경우 404 오류를 반환합니다.
     """
-    logger.info(f"자막 요청 접수: {request.url}, 언어: {request.language}")
-    
     try:
-        result = await subtitle_service.get_subtitles(request.url, request.language)
-        return result
+        logger.info(f"자막 요청 받음: {request.url}, 언어: {request.language}")
+        
+        # URL에서 비디오 ID 추출 시도
+        video_id = subtitle_service.extract_video_id(request.url)
+        if not video_id:
+            logger.error(f"잘못된 YouTube URL: {request.url}")
+            return {
+                "success": False,
+                "message": "Invalid YouTube URL"
+            }
+        
+        # 비동기 서비스 메서드 호출로 자막 추출
+        success, result = await subtitle_service.get_subtitles_with_ytdlp(video_id, request.language)
+        
+        if not success:
+            # 첫 번째 방법 실패, 파일 기반 방식 시도
+            logger.warning(f"yt-dlp 방식 실패, 파일 기반 방식 시도: {video_id}")
+            success, result = await subtitle_service.get_subtitles_with_file(video_id, request.language)
+        
+        if not success:
+            # 모든 방법 실패
+            logger.error(f"자막을 찾을 수 없음: {video_id}, 언어: {request.language}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Could not find captions for video: {video_id}"
+            )
+        
+        # 성공 결과 반환
+        logger.info(f"자막 추출 성공: {video_id}")
+        return {
+            "success": True,
+            "data": result
+        }
+        
+    except HTTPException as e:
+        # 이미 처리된 HTTP 예외는 그대로 전파
+        raise e
     except Exception as e:
-        logger.error(f"자막 추출 오류: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 기타 예외는 서버 오류로 처리
+        logger.error(f"자막 추출 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error extracting subtitles: {str(e)}"
+        )
 
 @app.get(
     "/api/video/info", 
@@ -335,24 +371,41 @@ async def get_video_info(
     )
 ):
     """
-    YouTube 동영상의 정보를 가져옵니다.
+    YouTube 비디오 정보 조회 API 엔드포인트
     
-    - **id**: YouTube 비디오 ID
-    
-    반환값은 제목, 채널명, 썸네일 URL, 지속 시간, 사용 가능한 자막 언어 등을 포함합니다.
+    이 엔드포인트는 YouTube 비디오 ID를 받아 해당 비디오의 상세 정보를 제공합니다.
+    제목, 채널명, 썸네일 URL, 재생 시간, 사용 가능한 자막 언어 목록을 포함합니다.
     """
-    logger.info(f"비디오 정보 요청: {id}")
-    
     try:
+        logger.info(f"비디오 정보 요청: {id}")
+        
+        # 비동기 서비스 메서드로 비디오 정보 가져오기
         video_info = await subtitle_service.get_video_info(id)
         
+        if not video_info:
+            logger.error(f"비디오 정보를 찾을 수 없음: {id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not find video information: {id}"
+            )
+        
+        # 응답 구성 및 반환
+        logger.info(f"비디오 정보 반환: {id}")
         return {
             "success": True,
             "data": video_info
         }
+        
+    except HTTPException as e:
+        # 이미 처리된 HTTP 예외는 그대로 전파
+        raise e
     except Exception as e:
-        logger.error(f"비디오 정보 가져오기 오류: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # 기타 예외는 서버 오류로 처리
+        logger.error(f"비디오 정보 조회 중 오류 발생: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting video information: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
