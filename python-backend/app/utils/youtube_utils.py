@@ -29,15 +29,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("youtube_utils")
 
+# 환경 감지
+RUNNING_IN_CONTAINER = os.path.exists('/.dockerenv') or os.path.exists('/app')
+logger.info(f"컨테이너 환경에서 실행 중: {RUNNING_IN_CONTAINER}")
+
 # 전역 변수
 last_request_time = 0
 min_request_interval = 5  # 초 단위
 USE_BROWSER_FIRST = False  # Playwright 브라우저를 우선적으로 사용
 USE_BROWSER_FALLBACK = True  # yt-dlp 실패 시 Playwright 폴백 사용 여부
 USE_YTDLP_COOKIES = True  # yt-dlp에 쿠키 사용 여부
-USE_TOR_NETWORK = True  # Tor 네트워크 사용 활성화
+# 컨테이너 환경에서는 Tor 기본 비활성화
+USE_TOR_NETWORK = False if RUNNING_IN_CONTAINER else True  # Tor 네트워크 사용 활성화
 TOR_PROXY = "socks5://127.0.0.1:9050"  # Tor 프록시 주소 (기본값)
-USE_PROXIES = True  # 프록시 사용 여부 - 기본값 false로 변경
+USE_PROXIES = False if RUNNING_IN_CONTAINER else True  # 프록시 사용 여부 - 컨테이너에서는 비활성화
 
 # 프록시 관련 상수
 MAX_WORKERS = 10  # 프록시 테스트용 최대 워커 수
@@ -522,6 +527,7 @@ def setup_yt_auth(use_auth=False):
 async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=False) -> Tuple[bool, Dict[str, Any]]:
     """
     지정된 언어로 YouTube 비디오의 자막을 가져옵니다.
+    컨테이너 환경에서는 최적화된 방법만 사용합니다.
     """
     global last_request_time
     
@@ -556,47 +562,77 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
     }
     
     # 시도 순서는 성공 가능성이 높은 것부터 차례로
-    extraction_methods = [
-        # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
-        {
-            "name": "YouTube Transcript API",
-            "func": extract_subtitles_with_transcript_api,
-            "args": [video_id, language, video_info]
-        },
-        # 2단계: yt-dlp + Tor 네트워크 (봇 감지 회피에 효과적)
-        {
-            "name": "yt-dlp + Tor",
-            "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
-            "args": [],
-            "condition": USE_TOR_NETWORK
-        },
-        # 3단계: 외부 API 방식 시도 (빠르고 안정적)
-        {
-            "name": "외부 API 서비스",
-            "func": extract_subtitles_with_external_api,
-            "args": [video_id, language, video_info]
-        },
-        # 4단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
-        {
-            "name": "웹 스크래핑",
-            "func": extract_subtitles_with_scraping,
-            "args": [video_id, language, video_info]
-        },
-        # 5단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
-        {
-            "name": "undetected_chromedriver",
-            "func": extract_subtitles_with_undetected_chrome,
-            "args": [video_id, language, video_info],
-            "condition": UNDETECTED_CHROME_AVAILABLE
-        },
-        # 6단계: 일반 브라우저 방식 시도
-        {
-            "name": "브라우저 자동화",
-            "func": extract_subtitles_with_browser,
-            "args": [video_id, language, video_info],
-            "condition": USE_BROWSER_FIRST
-        }
-    ]
+    # 컨테이너 환경에서는 리소스 효율적인 방법만 사용
+    if RUNNING_IN_CONTAINER:
+        logger.info("컨테이너 환경에 최적화된 추출 방법을 사용합니다.")
+        extraction_methods = [
+            # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
+            {
+                "name": "YouTube Transcript API",
+                "func": extract_subtitles_with_transcript_api,
+                "args": [video_id, language, video_info]
+            },
+            # 2단계: 외부 API 방식 시도 (빠르고 안정적)
+            {
+                "name": "외부 API 서비스",
+                "func": extract_subtitles_with_external_api,
+                "args": [video_id, language, video_info]
+            },
+            # 3단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
+            {
+                "name": "웹 스크래핑",
+                "func": extract_subtitles_with_scraping,
+                "args": [video_id, language, video_info]
+            },
+            # 4단계: yt-dlp (마지막 시도)
+            {
+                "name": "일반 yt-dlp",
+                "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
+                "args": []
+            }
+        ]
+    else:
+        extraction_methods = [
+            # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
+            {
+                "name": "YouTube Transcript API",
+                "func": extract_subtitles_with_transcript_api,
+                "args": [video_id, language, video_info]
+            },
+            # 2단계: yt-dlp + Tor 네트워크 (봇 감지 회피에 효과적)
+            {
+                "name": "yt-dlp + Tor",
+                "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
+                "args": [],
+                "condition": USE_TOR_NETWORK
+            },
+            # 3단계: 외부 API 방식 시도 (빠르고 안정적)
+            {
+                "name": "외부 API 서비스",
+                "func": extract_subtitles_with_external_api,
+                "args": [video_id, language, video_info]
+            },
+            # 4단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
+            {
+                "name": "웹 스크래핑",
+                "func": extract_subtitles_with_scraping,
+                "args": [video_id, language, video_info]
+            },
+            # 5단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
+            {
+                "name": "undetected_chromedriver",
+                "func": extract_subtitles_with_undetected_chrome,
+                "args": [video_id, language, video_info],
+                "condition": UNDETECTED_CHROME_AVAILABLE
+            },
+            # 6단계: 일반 브라우저 방식 시도
+            {
+                "name": "브라우저 자동화",
+                "func": extract_subtitles_with_browser,
+                "args": [video_id, language, video_info],
+                "condition": USE_BROWSER_FIRST
+            }
+        ]
     
     errors = {}
     
@@ -2570,10 +2606,19 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
 def init_tools():
     """
     필요한 도구와 서비스를 초기화합니다.
+    컨테이너 환경에서는 일부 기능을 비활성화합니다.
     """
     global USE_TOR_NETWORK
     
-    # 토르 네트워크 연결 테스트
+    # 컨테이너 환경에서는 리소스 사용량을 최소화
+    if RUNNING_IN_CONTAINER:
+        logger.info("컨테이너 환경 감지: 리소스 사용 최적화 모드로 실행합니다.")
+        global USE_BROWSER_FIRST, USE_PROXIES
+        USE_BROWSER_FIRST = False  # 브라우저 방식 비활성화
+        USE_PROXIES = False  # 프록시 비활성화
+        USE_TOR_NETWORK = False  # Tor 네트워크 비활성화
+    
+    # 토르 네트워크 연결 테스트 (활성화된 경우만)
     if USE_TOR_NETWORK:
         try:
             if not test_tor_connection():
@@ -2593,16 +2638,20 @@ def init_tools():
     else:
         logger.info(f"기존 YouTube 쿠키 파일을 사용합니다: {cookies_file}")
     
-    # Playwright 브라우저 설치 확인
-    try:
-        import subprocess
-        logger.info("Playwright 브라우저 설치 확인 중...")
-        subprocess.run(["python", "-m", "playwright", "install", "chromium"], 
-                      check=True, capture_output=True)
-        logger.info("Playwright 브라우저가 설치되었습니다.")
-    except Exception as e:
-        logger.warning(f"Playwright 브라우저 설치 확인 중 오류 발생: {str(e)}")
-
+    # Playwright 브라우저 설치 확인 (메모리 문제로 컨테이너에서는 조건부 실행)
+    if not RUNNING_IN_CONTAINER and USE_BROWSER_FIRST:
+        try:
+            import subprocess
+            logger.info("Playwright 브라우저 설치 확인 중... (개발 환경 전용)")
+            subprocess.run(["python", "-m", "playwright", "install", "chromium"], 
+                         check=True, capture_output=True)
+            logger.info("Playwright 브라우저가 설치되었습니다.")
+        except Exception as e:
+            logger.warning(f"Playwright 브라우저 설치 확인 중 오류 발생: {str(e)}")
+            USE_BROWSER_FIRST = False
+    elif RUNNING_IN_CONTAINER:
+        logger.info("컨테이너 환경에서는 Playwright 브라우저 설치를 건너뜁니다.")
+        
 def test_tor_connection():
     """
     Tor 네트워크 연결을 테스트합니다.
