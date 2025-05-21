@@ -21,6 +21,7 @@ import tempfile
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import traceback
+from .subtitle_utils import process_subtitles, convert_transcript_api_format
 
 # 로깅 설정
 logging.basicConfig(
@@ -402,7 +403,7 @@ def get_video_info(video_id: str, max_retries=3) -> Dict[str, Any]:
                 # 필요한 정보만 추출
                 video_info = {
                     'title': info.get('title', f"Video {video_id}"),
-                    'channelName': info.get('uploader', "Unknown Channel"),
+                    'channelName': info.get('uploader', "Unknown"),
                     'thumbnailUrl': info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
                     'duration': info.get('duration', 0),
                     'availableLanguages': get_available_languages(info),
@@ -553,13 +554,30 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
     # 초기화
     init_tools()
     
-    # 비디오 기본 정보 가져오기 (최소한의 정보)
-    video_info = {
-        'title': f"Video {video_id}",
-        'channelName': "Unknown Channel",
-        'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
-        'videoId': video_id
-    }
+    # 비디오 정보 가져오기 (실제 타이틀, 채널명 등)
+    try:
+        video_info_result = get_video_info_minimal(video_id)
+        if video_info_result:
+            video_info = video_info_result
+            logger.info(f"비디오 정보 가져오기 성공: {video_info['title']} ({video_info['channelName']})")
+        else:
+            # 실패 시 기본 정보 사용
+            video_info = {
+                'title': "Unknown",
+                'channelName': "Unknown",
+                'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+                'videoId': video_id
+            }
+            logger.warning("비디오 정보 가져오기 실패, 기본 정보 사용")
+    except Exception as e:
+        # 예외 발생 시 기본 정보 사용
+        video_info = {
+            'title': "Unknown",
+            'channelName': "Unknown",
+            'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+            'videoId': video_id
+        }
+        logger.error(f"비디오 정보 가져오기 예외 발생: {str(e)}, 기본 정보 사용")
     
     # 시도 순서는 성공 가능성이 높은 것부터 차례로
     # 컨테이너 환경에서는 리소스 효율적인 방법만 사용
@@ -663,6 +681,25 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
                     if success:
                         logger.info(f"방법 '{method_name}'으로 자막 추출 성공")
                         last_request_time = time.time()  # 마지막 요청 시간 업데이트
+                        
+                        # 자막 데이터가 있는 경우 서브타이틀 처리
+                        if 'data' in result and 'text' in result['data']:
+                            # 서브타이틀 처리: 자막 형식에 따라 적절히 처리
+                            subtitle_text = result['data']['text']
+                            format_type = "text"
+                            
+                            # 형식 검사
+                            if subtitle_text.startswith('<?xml'):
+                                format_type = "xml"
+                            elif subtitle_text.startswith('{'):
+                                format_type = "json"
+                                
+                            # 서브타이틀 처리 및 반환
+                            subtitle_data = process_subtitles(subtitle_text, format_type)
+                            
+                            # 기존 응답에 서브타이틀 데이터 추가
+                            result['data']['subtitles'] = subtitle_data['subtitles']
+                        
                         return success, result
                     else:
                         error_msg = result.get("message", "알 수 없는 오류")
@@ -858,7 +895,7 @@ def _run_ytdlp(video_id: str, ydl_opts: Dict[str, Any], language: str, video_inf
             # 더 자세한 비디오 정보 가져오기
             video_info = {
                 'title': info.get('title', f"Video {video_id}"),
-                'channelName': info.get('uploader', "Unknown Channel"),
+                'channelName': info.get('uploader', "Unknown"),
                 'thumbnailUrl': info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
                 'videoId': video_id
             }
@@ -1058,7 +1095,7 @@ async def extract_subtitles_with_browser(video_id: str, language: str, video_inf
             
             # 제목과 채널 이름 추출
             title = await page.title()
-            channel_name = "Unknown Channel"
+            channel_name = "Unknown"
             try:
                 channel_elem = page.locator('#owner #channel-name a')
                 if await channel_elem.is_visible():
@@ -1615,7 +1652,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang])
                     logger.info(f"직접 호출로 자막 발견 (언어: {lang})")
                     
-                    # 자막 텍스트로 변환
+                    # 자막 텍스트 생성 및 서브타이틀 항목 변환
                     subtitle_lines = []
                     for item in transcript_data:
                         text = item.get('text', '').strip()
@@ -1624,13 +1661,25 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     
                     subtitle_text = '\n'.join(subtitle_lines)
                     
+                    # 서브타이틀 항목 변환
+                    subtitles = convert_transcript_api_format(transcript_data)
+                    
                     if subtitle_text:
                         logger.info(f"YouTube Transcript API로 자막 추출 성공: {len(subtitle_text)} 자")
+                        
+                        # 비디오 정보 업데이트 시도
+                        try:
+                            detailed_video_info = get_video_info_minimal(video_id)
+                            if detailed_video_info:
+                                video_info.update(detailed_video_info)
+                        except Exception as e:
+                            logger.warning(f"자세한 비디오 정보 가져오기 실패 (기본 정보 사용): {str(e)}")
+                        
                         return True, {
                             'success': True,
                             'data': {
                                 'text': subtitle_text,
-                                'subtitles': [],  # 호환성을 위한 빈 배열
+                                'subtitles': subtitles,  # 형식이 맞는 서브타이틀 항목
                                 'videoInfo': video_info
                             }
                         }
@@ -1644,7 +1693,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                 # 자막 데이터 가져오기
                 transcript_data = transcript.fetch()
                 
-                # 자막 텍스트로 변환
+                # 자막 텍스트 생성
                 subtitle_lines = []
                 for item in transcript_data:
                     text = item.get('text', '').strip()
@@ -1652,6 +1701,9 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         subtitle_lines.append(text)
                 
                 subtitle_text = '\n'.join(subtitle_lines)
+                
+                # 서브타이틀 항목 변환
+                subtitles = convert_transcript_api_format(transcript_data)
                 
                 # 자막 텍스트가 있는 경우
                 if subtitle_text:
@@ -1669,7 +1721,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         'success': True,
                         'data': {
                             'text': subtitle_text,
-                            'subtitles': [],  # 호환성을 위한 빈 배열
+                            'subtitles': subtitles,  # 형식이 맞는 서브타이틀 항목
                             'videoInfo': video_info
                         }
                     }
@@ -1702,33 +1754,72 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
             'message': f"Error in YouTube Transcript API: {str(e)}"
         }
 
-def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
+def get_video_info_minimal(video_id: str) -> dict:
     """
-    YouTube API를 사용하지 않고 최소한의 비디오 정보만 가져옵니다.
+    유튜브 비디오의 기본 정보(제목, 채널명, 썸네일 URL)만 가져오는 경량화된 함수
     """
     try:
+        # 유튜브 페이지 가져오기
         url = f"https://www.youtube.com/watch?v={video_id}"
         headers = {
-            'User-Agent': get_random_browser_fingerprint(),
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-        
         response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        if response.status_code != 200:
+            logger.warning(f"비디오 정보 가져오기 실패: 상태 코드 {response.status_code}")
+            return None
+            
+        html_content = response.text
+        
+        # Node.js와 동일하게 ytInitialPlayerResponse에서 정보 추출
+        player_response_match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?});', html_content)
+        if player_response_match:
+            try:
+                player_response = json.loads(player_response_match.group(1))
+                
+                # Node.js와 동일한 경로에서 정보 추출
+                if 'videoDetails' in player_response:
+                    video_details = player_response['videoDetails']
+                    title = video_details.get('title', "Unknown")
+                    channel_name = video_details.get('author', "Unknown")
+                    
+                    # 썸네일 URL 추출
+                    thumbnail_url = ""
+                    if 'thumbnail' in video_details and 'thumbnails' in video_details['thumbnail']:
+                        thumbnails = video_details['thumbnail']['thumbnails']
+                        if thumbnails and len(thumbnails) > 0:
+                            # 가장 첫 번째 썸네일 사용 (Node.js와 동일)
+                            thumbnail_url = thumbnails[0].get('url', "")
+                    
+                    # 썸네일이 없으면 기본 URL 사용
+                    if not thumbnail_url:
+                        thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                    
+                    return {
+                        'title': title,
+                        'channelName': channel_name,
+                        'thumbnailUrl': thumbnail_url,
+                        'videoId': video_id
+                    }
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"ytInitialPlayerResponse 파싱 실패: {str(e)}")
+                # 실패 시 아래 메타태그 방식으로 fallback
+        
+        # ytInitialPlayerResponse 방식이 실패하면 메타태그에서 정보 추출
+        soup = BeautifulSoup(html_content, 'lxml')
         
         # 제목 추출
-        title = soup.find('meta', property='og:title')
-        title = title['content'] if title else f"Video {video_id}"
+        title_tag = soup.find('meta', property='og:title')
+        title = title_tag['content'] if title_tag else "Unknown"
         
-        # 채널 이름 추출 (여러 방법 시도)
-        channel = soup.find('meta', property='og:video:tag')
-        if not channel:
-            channel = soup.find('span', {'itemprop': 'author'})
-        channel_name = channel['content'] if channel and 'content' in channel.attrs else "Unknown Channel"
+        # 채널명 추출
+        channel_tag = soup.find('meta', property='og:video:tag') or soup.find('span', itemprop='author')
+        channel_name = channel_tag['content'] if channel_tag and 'content' in channel_tag.attrs else "Unknown"
         
-        # 썸네일 URL
-        thumbnail = soup.find('meta', property='og:image')
-        thumbnail_url = thumbnail['content'] if thumbnail else f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+        # 썸네일 URL 추출
+        thumb_tag = soup.find('meta', property='og:image')
+        thumbnail_url = thumb_tag['content'] if thumb_tag else f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
         
         return {
             'title': title,
@@ -1736,8 +1827,9 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
             'thumbnailUrl': thumbnail_url,
             'videoId': video_id
         }
+        
     except Exception as e:
-        logger.warning(f"최소 비디오 정보 가져오기 실패: {str(e)}")
+        logger.error(f"비디오 정보 가져오기 실패: {str(e)}")
         return None
 
 # 깃헙에서 최신 yt-dlp 버전 확인 및 업데이트 함수

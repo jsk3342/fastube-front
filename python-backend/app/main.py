@@ -165,22 +165,8 @@ class SubtitleRequest(BaseModel):
 # 자막 데이터 모델
 class SubtitleData(BaseModel):
     text: str = Field(..., description="전체 자막 텍스트")
-    subtitles: List[SubtitleItem] = Field([], description="자막 항목 목록")
+    subtitles: List[SubtitleItem] = Field([], description="자막 항목 목록 (사용되지 않을 수 있음)")
     videoInfo: VideoInfo = Field(..., description="비디오 정보")
-    
-    class Config:
-        schema_extra = {
-            "example": {
-                "text": "안녕하세요.\n이것은 자막 예시입니다.",
-                "subtitles": [],
-                "videoInfo": {
-                    "title": "샘플 비디오",
-                    "channelName": "샘플 채널",
-                    "thumbnailUrl": "https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
-                    "videoId": "dQw4w9WgXcQ"
-                }
-            }
-        }
 
 # 응답 모델
 class SubtitleResponse(BaseModel):
@@ -193,12 +179,12 @@ class SubtitleResponse(BaseModel):
             "example": {
                 "success": True,
                 "data": {
-                    "text": "안녕하세요.\n이것은 자막 예시입니다.",
+                    "text": "안녕하세요.\n이 비디오는 리릭 애슐리의 'Never Gonna Give You Up'입니다.\n...",
                     "subtitles": [],
                     "videoInfo": {
-                        "title": "샘플 비디오",
-                        "channelName": "샘플 채널",
-                        "thumbnailUrl": "https://img.youtube.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+                        "title": "Never Gonna Give You Up",
+                        "channelName": "Rick Astley",
+                        "thumbnailUrl": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
                         "videoId": "dQw4w9WgXcQ"
                     }
                 }
@@ -305,7 +291,6 @@ async def get_subtitles(
     이 함수는 YouTube URL과 언어 코드를 받아 해당 비디오의 자막을 추출합니다.
     여러 방식(API, 브라우저, yt-dlp)을 사용해 자막을 가져오며, 
     모든 방식이 실패할 경우 404 오류를 반환합니다.
-    노드 서버와 동일한 응답 형식을 사용합니다.
     """
     try:
         logger.info(f"자막 요청 받음: {request.url}, 언어: {request.language}")
@@ -338,11 +323,7 @@ async def get_subtitles(
         # 성공 결과 반환
         logger.info(f"자막 추출 성공: {video_id}")
         
-        # 응답 데이터 확인 및 구성
-        if not isinstance(subtitle_data, dict):
-            subtitle_data = {}
-            
-        # 필수 필드 확인
+        # 모든 필수 필드가 있는지 확인
         if 'text' not in subtitle_data:
             subtitle_data['text'] = ""
         if 'subtitles' not in subtitle_data:
