@@ -1,19 +1,16 @@
 declare module "youtube-captions-scraper" {
-  export interface Caption {
-    start: number;
-    dur: number;
-    text: string;
-  }
-
-  export function getSubtitles(options: {
+  interface SubtitleOptions {
     videoID: string;
     lang?: string;
-  }): Promise<Caption[]>;
+  }
 
-  export function getLanguages(videoID: string): Promise<
-    Array<{
-      lang: string;
-      name: string;
-    }>
-  >;
+  interface SubtitleResult {
+    text: string;
+    start: string;
+    dur: string;
+  }
+
+  export function getSubtitles(
+    options: SubtitleOptions
+  ): Promise<SubtitleResult[]>;
 }
