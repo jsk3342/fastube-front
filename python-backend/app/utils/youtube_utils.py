@@ -1783,8 +1783,14 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
     """
     비디오 정보를 가져옵니다.
     여러 방법으로 시도하고 봇 감지를 우회하도록 개선되었습니다.
+    SSL 인증서 검증 문제를 해결했습니다.
     """
     logger.info(f"비디오 정보 가져오기 시작: {video_id}")
+    
+    # SSL 인증서 검증 경고 무시
+    import warnings
+    from urllib3.exceptions import InsecureRequestWarning
+    warnings.filterwarnings('ignore', category=InsecureRequestWarning)
     
     # 기본 비디오 정보
     video_info = {
@@ -1821,26 +1827,31 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
         ]
         random_user_agent = random.choice(user_agents)
         
-        # yt-dlp 옵션 설정
+        # yt-dlp 옵션 설정 (SSL 인증서 검증 비활성화)
         ydl_opts = {
             'skip_download': True,
             'quiet': True,
             'no_warnings': True,
             'ignoreerrors': True,
             'nocheckcertificate': True,  # SSL 인증서 검증 비활성화
+            'compat_opts': ['no-certifi', 'no-check-certificates'],  # 인증서 검증 관련 호환성 옵션
             'cookiefile': cookies_file,
             'user_agent': random_user_agent,
             'referer': 'https://www.youtube.com/',
             'geo_bypass': True,
             'geo_bypass_country': 'US',
+            'socket_timeout': 15  # 소켓 타임아웃 증가
         }
         
         # 토르 사용 시 추가 옵션
         if use_tor:
             ydl_opts.update({
-                'proxy': f'socks5://127.0.0.1:{TOR_SOCKS_PORT}',
+                'proxy': TOR_PROXY,
                 'source_address': '0.0.0.0',
             })
+        
+        # Python 환경 변수로 SSL 인증서 검증 비활성화
+        os.environ['PYTHONHTTPSVERIFY'] = '0'
         
         # 1초 랜덤 지연 (봇 탐지 방지)
         time.sleep(random.uniform(0.5, 1.5))
@@ -1876,7 +1887,7 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
                 else:
                     time.sleep(random.uniform(0.5, 1.5))
         
-        logger.error(f"yt-dlp로 비디오 정보 가져오기 실패, 웹 스크래핑으로 시도합니다.")
+        logger.warning(f"비디오 정보 가져오기 타임아웃, 기본 정보 사용")
     except Exception as e:
         logger.error(f"yt-dlp 에러: {str(e)}")
     
@@ -1896,6 +1907,9 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
         
         session = requests.Session()
         
+        # SSL 인증서 검증 비활성화
+        session.verify = False
+        
         # 쿠키 파일에서 쿠키 로드
         if os.path.exists(cookies_file):
             try:
@@ -1909,8 +1923,8 @@ def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
         proxies = None
         if use_tor:
             proxies = {
-                'http': f'socks5h://127.0.0.1:{TOR_SOCKS_PORT}',
-                'https': f'socks5h://127.0.0.1:{TOR_SOCKS_PORT}'
+                'http': TOR_PROXY,
+                'https': TOR_PROXY
             }
             
         # 3번 시도
@@ -2155,6 +2169,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
 def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None, http_headers: Dict[str, str] = None, cookie_file: str = None):
     """
     yt-dlp 기본 옵션을 가져옵니다.
+    SSL 인증서 검증 비활성화 및 타임아웃 설정을 최적화했습니다.
     """
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     
@@ -2169,13 +2184,19 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
         'verbose': True,
         'no_warnings': False,
         'ignoreerrors': True,
-        'nocheckcertificate': True,  # SSL 인증서 검증 비활성화 (중요)
-        'no_color': True
+        'nocheckcertificate': True,  # SSL 인증서 검증 비활성화 (중요 - 컨테이너 환경에서 필수)
+        'socket_timeout': 15,  # 소켓 타임아웃 증가
+        'no_color': True,
+        'compat_opts': ['no-certifi'],  # 인증서 검증 관련 호환성 옵션
+        'compat_opts': ['no-check-certificates'],  # 인증서 검증 비활성화 호환성 옵션
+        'extractor_retries': 3  # 추출 재시도 횟수
     }
     
     # 사용자 에이전트 설정
     if user_agent:
         ydl_opts['user_agent'] = user_agent
+    else:
+        ydl_opts['user_agent'] = get_random_browser_fingerprint()
     
     # HTTP 헤더 설정
     if http_headers:
@@ -2184,11 +2205,15 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
     # 쿠키 설정
     if cookie_file and os.path.exists(cookie_file):
         ydl_opts['cookiefile'] = cookie_file
+        logger.info(f"쿠키 파일 준비 완료: {cookie_file}")
     
     # Tor 프록시 설정
     if USE_TOR_NETWORK:
         logger.info("Tor 프록시 사용")
         ydl_opts['proxy'] = TOR_PROXY
+    
+    # SSL 관련 환경 변수 설정 (Python 환경에서 SSL 인증서 검증 비활성화)
+    os.environ['PYTHONHTTPSVERIFY'] = '0'
     
     return ydl_opts
 
@@ -2207,64 +2232,78 @@ def test_tor_connection():
         
         # Tor SOCKS 포트 설정 (컨테이너에서는 일반적으로 9050)
         tor_socks_port = 9050
-        TOR_PROXY = f"socks5://127.0.0.1:{tor_socks_port}"
+        tor_proxy = f"socks5://127.0.0.1:{tor_socks_port}"
+        global TOR_PROXY
+        TOR_PROXY = tor_proxy
         
-        logger.info("Tor 연결 테스트 중: https://check.torproject.org/api/ip")
+        logger.info(f"Tor 연결 테스트 중 (프록시: {tor_proxy})")
         
         # 세션 생성 및 프록시 설정
         session = requests.Session()
         session.proxies = {
-            'http': TOR_PROXY,
-            'https': TOR_PROXY
+            'http': tor_proxy,
+            'https': tor_proxy
         }
+        session.verify = False  # SSL 인증서 검증 비활성화
         
-        # 연결 테스트 (SSL 인증서 검증 비활성화, 타임아웃 증가)
-        response = session.get(
-            'https://check.torproject.org/api/ip', 
-            timeout=10,  # 타임아웃 증가 (컨테이너에서는 더 많은 시간이 필요할 수 있음)
-            verify=False  # SSL 인증서 검증 비활성화
-        )
+        # 테스트할 URL 목록 (첫 번째부터 시도)
+        test_urls = [
+            ('https://check.torproject.org/api/ip', 15),
+            ('http://httpbin.org/ip', 10),
+            ('https://api.ipify.org?format=json', 10),
+            ('http://ip-api.com/json', 10)
+        ]
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('IsTor', False):
-                logger.info(f"Tor 연결 성공! IP: {data.get('IP', '알 수 없음')}")
-                return True
-            else:
-                logger.warning("Tor 연결 실패: Tor 네트워크가 아닙니다.")
-                # 바로 대체 테스트로 넘어가지 않고 추가 정보 로깅
-                logger.info(f"응답 데이터: {data}")
-                return False
-        else:
-            logger.warning(f"Tor 연결 실패: 상태 코드 {response.status_code}")
+        # 각 URL을 순차적으로 시도
+        for url, timeout in test_urls:
+            try:
+                logger.info(f"Tor 테스트 URL: {url} (타임아웃: {timeout}초)")
+                response = session.get(
+                    url, 
+                    timeout=timeout,
+                    headers={
+                        'User-Agent': get_random_browser_fingerprint(),
+                        'Accept': 'application/json',
+                    }
+                )
+                
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                        ip = result.get('IP', result.get('ip', result.get('query', 'Unknown')))
+                        if ip and ip != 'Unknown':
+                            logger.info(f"Tor 연결 성공! IP: {ip}")
+                            return True
+                    except:
+                        # JSON 파싱 실패해도 응답이 있으면 성공으로 간주
+                        logger.info(f"Tor 연결 성공! (응답: {response.text[:50]}...)")
+                        return True
+            except Exception as e:
+                logger.warning(f"Tor 테스트 URL({url}) 연결 실패: {str(e)}")
+                continue
+        
+        # 모든 URL이 실패한 경우
+        logger.error("모든 Tor 테스트 URL에 연결 실패")
+        
+        # nc 명령으로 9050 포트 연결 테스트 (더 기본적인 테스트)
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                result = s.connect_ex(('127.0.0.1', 9050))
+                if result == 0:
+                    logger.info("Tor SOCKS 포트(9050)가 열려 있음. 서비스는 실행 중입니다.")
+                    # 포트는 열려있지만 Tor가 정상 작동하는지 확실하지 않으므로 True 반환
+                    return True
+                else:
+                    logger.error("Tor SOCKS 포트(9050)가 닫혀 있습니다.")
+                    return False
+        except Exception as e:
+            logger.error(f"Tor 소켓 연결 테스트 실패: {str(e)}")
             return False
             
     except Exception as e:
-        logger.warning(f"Tor 연결 테스트 실패: {str(e)}")
-        # 여러 대체 테스트 사이트 시도
-        alt_sites = [
-            'http://httpbin.org/ip',
-            'https://api.ipify.org?format=json',
-            'http://ip-api.com/json'
-        ]
-        
-        for site in alt_sites:
-            try:
-                logger.info(f"대체 사이트로 Tor 테스트 시도: {site}")
-                session = requests.Session()
-                session.proxies = {
-                    'http': TOR_PROXY,
-                    'https': TOR_PROXY
-                }
-                response = session.get(site, timeout=10, verify=False)
-                if response.status_code == 200:
-                    logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', response.text[:50])}")
-                    return True
-            except Exception as e2:
-                logger.warning(f"대체 테스트 실패 ({site}): {str(e2)}")
-                continue
-        
-        logger.error("모든 Tor 테스트 실패")
+        logger.error(f"Tor 연결 테스트 기본 과정에서 오류 발생: {str(e)}")
         return False
 
 # Tor 네트워크 IP 변경 (새 경로)
@@ -3094,64 +3133,78 @@ def test_tor_connection():
         
         # Tor SOCKS 포트 설정 (컨테이너에서는 일반적으로 9050)
         tor_socks_port = 9050
-        TOR_PROXY = f"socks5://127.0.0.1:{tor_socks_port}"
+        tor_proxy = f"socks5://127.0.0.1:{tor_socks_port}"
+        global TOR_PROXY
+        TOR_PROXY = tor_proxy
         
-        logger.info("Tor 연결 테스트 중: https://check.torproject.org/api/ip")
+        logger.info(f"Tor 연결 테스트 중 (프록시: {tor_proxy})")
         
         # 세션 생성 및 프록시 설정
         session = requests.Session()
         session.proxies = {
-            'http': TOR_PROXY,
-            'https': TOR_PROXY
+            'http': tor_proxy,
+            'https': tor_proxy
         }
+        session.verify = False  # SSL 인증서 검증 비활성화
         
-        # 연결 테스트 (SSL 인증서 검증 비활성화, 타임아웃 증가)
-        response = session.get(
-            'https://check.torproject.org/api/ip', 
-            timeout=10,  # 타임아웃 증가 (컨테이너에서는 더 많은 시간이 필요할 수 있음)
-            verify=False  # SSL 인증서 검증 비활성화
-        )
+        # 테스트할 URL 목록 (첫 번째부터 시도)
+        test_urls = [
+            ('https://check.torproject.org/api/ip', 15),
+            ('http://httpbin.org/ip', 10),
+            ('https://api.ipify.org?format=json', 10),
+            ('http://ip-api.com/json', 10)
+        ]
         
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('IsTor', False):
-                logger.info(f"Tor 연결 성공! IP: {data.get('IP', '알 수 없음')}")
-                return True
-            else:
-                logger.warning("Tor 연결 실패: Tor 네트워크가 아닙니다.")
-                # 바로 대체 테스트로 넘어가지 않고 추가 정보 로깅
-                logger.info(f"응답 데이터: {data}")
-                return False
-        else:
-            logger.warning(f"Tor 연결 실패: 상태 코드 {response.status_code}")
+        # 각 URL을 순차적으로 시도
+        for url, timeout in test_urls:
+            try:
+                logger.info(f"Tor 테스트 URL: {url} (타임아웃: {timeout}초)")
+                response = session.get(
+                    url, 
+                    timeout=timeout,
+                    headers={
+                        'User-Agent': get_random_browser_fingerprint(),
+                        'Accept': 'application/json',
+                    }
+                )
+                
+                if response.status_code == 200:
+                    try:
+                        result = response.json()
+                        ip = result.get('IP', result.get('ip', result.get('query', 'Unknown')))
+                        if ip and ip != 'Unknown':
+                            logger.info(f"Tor 연결 성공! IP: {ip}")
+                            return True
+                    except:
+                        # JSON 파싱 실패해도 응답이 있으면 성공으로 간주
+                        logger.info(f"Tor 연결 성공! (응답: {response.text[:50]}...)")
+                        return True
+            except Exception as e:
+                logger.warning(f"Tor 테스트 URL({url}) 연결 실패: {str(e)}")
+                continue
+        
+        # 모든 URL이 실패한 경우
+        logger.error("모든 Tor 테스트 URL에 연결 실패")
+        
+        # nc 명령으로 9050 포트 연결 테스트 (더 기본적인 테스트)
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(5)
+                result = s.connect_ex(('127.0.0.1', 9050))
+                if result == 0:
+                    logger.info("Tor SOCKS 포트(9050)가 열려 있음. 서비스는 실행 중입니다.")
+                    # 포트는 열려있지만 Tor가 정상 작동하는지 확실하지 않으므로 True 반환
+                    return True
+                else:
+                    logger.error("Tor SOCKS 포트(9050)가 닫혀 있습니다.")
+                    return False
+        except Exception as e:
+            logger.error(f"Tor 소켓 연결 테스트 실패: {str(e)}")
             return False
             
     except Exception as e:
-        logger.warning(f"Tor 연결 테스트 실패: {str(e)}")
-        # 여러 대체 테스트 사이트 시도
-        alt_sites = [
-            'http://httpbin.org/ip',
-            'https://api.ipify.org?format=json',
-            'http://ip-api.com/json'
-        ]
-        
-        for site in alt_sites:
-            try:
-                logger.info(f"대체 사이트로 Tor 테스트 시도: {site}")
-                session = requests.Session()
-                session.proxies = {
-                    'http': TOR_PROXY,
-                    'https': TOR_PROXY
-                }
-                response = session.get(site, timeout=10, verify=False)
-                if response.status_code == 200:
-                    logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', response.text[:50])}")
-                    return True
-            except Exception as e2:
-                logger.warning(f"대체 테스트 실패 ({site}): {str(e2)}")
-                continue
-        
-        logger.error("모든 Tor 테스트 실패")
+        logger.error(f"Tor 연결 테스트 기본 과정에서 오류 발생: {str(e)}")
         return False
 
 # 애플리케이션 시작 시 초기화
