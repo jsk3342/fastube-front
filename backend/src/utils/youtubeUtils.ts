@@ -2,6 +2,11 @@ import he from "he";
 import axios from "axios";
 import { find } from "lodash";
 import striptags from "striptags";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+
+// 스텔스 플러그인 활성화 (봇 감지 방지)
+puppeteer.use(StealthPlugin());
 
 // YouTube URL에서 videoID를 추출하는 함수
 export function extractVideoID(url: string): string | null {
@@ -690,15 +695,6 @@ export async function getSubtitlesFromYouTube(
 
     console.log(`YouTube HTML 응답 크기: ${html.length} 바이트`);
 
-    // HTML 전체를 로그로 출력
-    console.log(
-      "[전체 HTML] 시작 ============================================="
-    );
-    console.log(html);
-    console.log(
-      "[전체 HTML] 끝 ==============================================="
-    );
-
     // -------- 다양한 패턴으로 자막 정보 검색 --------
     // 자막 URL 추출 시도
     let captionUrl: string | null = null;
@@ -1001,7 +997,7 @@ export async function getSubtitlesFromYouTube(
       const textContent = subtitles.map((subtitle) => subtitle.text).join("\n");
       console.log(`[5단계] 자막 텍스트 길이: ${textContent.length} 자`);
       console.log(
-        `[5단계] 자막 텍스트 샘플: ${textContent.substring(0, 200)}...`
+        `[5단계] 자막 텍스트 샘플: ${textContent.substring(0, 100)}...`
       );
 
       // 6. 비디오 정보 추출 (이미 추출되었을 수도 있음)
@@ -1042,5 +1038,274 @@ export async function getSubtitlesFromYouTube(
     }
 
     throw error;
+  }
+}
+
+/**
+ * Puppeteer를 사용하여 YouTube 자막 가져오기 (봇 감지 우회)
+ */
+export async function getSubtitlesWithPuppeteer(
+  videoId: string,
+  language: string = "ko"
+): Promise<SubtitleResponse> {
+  console.log(`[자막 추출 시작] 비디오 ID: ${videoId}, 언어: ${language}`);
+
+  // 브라우저 시작 (더 많은 옵션은 필요에 따라 추가)
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--disable-gpu",
+      "--window-size=1920x1080",
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+
+    // 사용자 에이전트 설정 (실제 브라우저처럼 보이기)
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    );
+
+    // 언어 설정
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    });
+
+    // 웹사이트 방문 전 쿠키 수락 페이지 우회 설정
+    await page.setCookie({
+      name: "CONSENT",
+      value: "YES+cb",
+      domain: ".youtube.com",
+      path: "/",
+    });
+
+    // 브라우저 지문 위장
+    await page.evaluateOnNewDocument(() => {
+      // 웹드라이버 감지 방지
+      Object.defineProperty(navigator, "webdriver", {
+        get: () => false,
+      });
+
+      // 플러그인 감지 방지
+      Object.defineProperty(navigator, "plugins", {
+        get: () => [
+          {
+            0: {
+              type: "application/x-google-chrome-pdf",
+              suffixes: "pdf",
+              description: "Portable Document Format",
+              enabledPlugin: Plugin,
+            },
+            description: "Portable Document Format",
+            filename: "internal-pdf-viewer",
+            length: 1,
+            name: "Chrome PDF Plugin",
+          },
+          {
+            0: {
+              type: "application/pdf",
+              suffixes: "pdf",
+              description: "",
+              enabledPlugin: Plugin,
+            },
+            description: "",
+            filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai",
+            length: 1,
+            name: "Chrome PDF Viewer",
+          },
+          {
+            0: {
+              type: "application/x-nacl",
+              suffixes: "",
+              description: "Native Client Executable",
+              enabledPlugin: Plugin,
+            },
+            1: {
+              type: "application/x-pnacl",
+              suffixes: "",
+              description: "Portable Native Client Executable",
+              enabledPlugin: Plugin,
+            },
+            description: "",
+            filename: "internal-nacl-plugin",
+            length: 2,
+            name: "Native Client",
+          },
+        ],
+      });
+
+      // 언어 및 플랫폼 설정
+      Object.defineProperty(navigator, "language", {
+        get: () => "ko-KR",
+      });
+      Object.defineProperty(navigator, "platform", {
+        get: () => "Win32",
+      });
+    });
+
+    // 페이지 로드 타임아웃 설정
+    await page.setDefaultNavigationTimeout(30000);
+
+    // YouTube 비디오 페이지 방문
+    console.log(
+      `[Puppeteer] YouTube 페이지 방문: https://www.youtube.com/watch?v=${videoId}`
+    );
+    await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+      waitUntil: "networkidle2",
+    });
+
+    // 페이지 로드 후 약간 기다림 (YouTube가 자막 정보를 로드할 시간을 줌)
+    // waitForTimeout 대신 setTimeout과 Promise 사용
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+
+    // 자막 버튼 클릭 전에 비디오 플레이어 로드 확인
+    await page
+      .waitForSelector("#movie_player", { timeout: 10000 })
+      .catch((err) => {
+        console.log("[Puppeteer] 비디오 플레이어 로드 실패:", err.message);
+      });
+
+    console.log("[Puppeteer] 페이지 로드 완료, 자막 데이터 추출 시작");
+
+    // 페이지 HTML 가져오기
+    const html = await page.content();
+
+    // 봇 감지 확인
+    const botDetection = checkForBotDetection(html);
+    if (botDetection.detected) {
+      throw new Error(`봇 감지됨: ${botDetection.reason}`);
+    }
+
+    // 자막 URL 추출 - ytInitialPlayerResponse에서 탐색
+    const captionData = await page.evaluate((lang: string) => {
+      try {
+        // 타입 확장
+        interface Window {
+          ytInitialPlayerResponse?: any;
+        }
+
+        // 두 가지 가능한 변수 위치 확인
+        let ytInitialPlayerResponse: any = null;
+
+        // 첫 번째 방법: 직접 window 객체에서 확인
+        if ((window as any).ytInitialPlayerResponse) {
+          ytInitialPlayerResponse = (window as any).ytInitialPlayerResponse;
+        }
+        // 두 번째 방법: HTML에서 정규식으로 검색
+        else {
+          const scriptTags = document.querySelectorAll("script");
+          for (const script of Array.from(scriptTags)) {
+            const text = script.textContent || "";
+            if (text.includes("ytInitialPlayerResponse")) {
+              const match = text.match(
+                /var\s+ytInitialPlayerResponse\s*=\s*({.+?});/
+              );
+              if (match && match[1]) {
+                ytInitialPlayerResponse = JSON.parse(match[1]);
+                break;
+              }
+            }
+          }
+        }
+
+        if (!ytInitialPlayerResponse) {
+          return { error: "ytInitialPlayerResponse를 찾을 수 없음" };
+        }
+
+        // 자막 트랙 목록 확인
+        if (
+          !ytInitialPlayerResponse.captions ||
+          !ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer ||
+          !ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer
+            .captionTracks
+        ) {
+          return { error: "자막 목록을 찾을 수 없음" };
+        }
+
+        const captionTracks =
+          ytInitialPlayerResponse.captions.playerCaptionsTracklistRenderer
+            .captionTracks;
+
+        // 사용 가능한 자막 언어 목록 수집
+        const availableLanguages = captionTracks.map((track: any) => {
+          return {
+            code: track.languageCode,
+            name:
+              track.name?.simpleText ||
+              track.name?.runs?.[0]?.text ||
+              track.languageCode,
+          };
+        });
+
+        // 요청한 언어 또는 영어 자막 찾기
+        const targetTrack =
+          captionTracks.find((t: any) => t.languageCode === lang) ||
+          captionTracks.find((t: any) => t.languageCode === "en");
+
+        if (!targetTrack) {
+          return {
+            error: "요청한 언어의 자막을 찾을 수 없음",
+            availableLanguages,
+          };
+        }
+
+        // 비디오 정보 추출
+        const videoInfo = ytInitialPlayerResponse.videoDetails
+          ? {
+              title: ytInitialPlayerResponse.videoDetails.title || "Unknown",
+              channelName:
+                ytInitialPlayerResponse.videoDetails.author || "Unknown",
+              thumbnailUrl:
+                ytInitialPlayerResponse.videoDetails.thumbnail?.thumbnails?.[0]
+                  ?.url || "",
+            }
+          : undefined;
+
+        return {
+          captionUrl: targetTrack.baseUrl,
+          videoInfo,
+        };
+      } catch (error) {
+        return { error: `자막 데이터 추출 중 오류: ${error}` };
+      }
+    }, language);
+
+    // 자막 URL을 찾지 못한 경우
+    if (captionData.error) {
+      console.log(`[Puppeteer] 자막 데이터 추출 실패: ${captionData.error}`);
+      throw new Error(captionData.error);
+    }
+
+    // 자막 데이터 다운로드
+    console.log(`[Puppeteer] 자막 URL 발견: ${captionData.captionUrl}`);
+    const captionResponse = await axios.get(captionData.captionUrl);
+
+    // 자막 파싱
+    const subtitles = parseSubtitles(captionResponse.data);
+    console.log(`[Puppeteer] 파싱된 자막 수: ${subtitles.length}`);
+
+    // 텍스트 추출
+    const textContent = subtitles.map((subtitle) => subtitle.text).join("\n");
+
+    // 결과 반환
+    return {
+      success: true,
+      data: {
+        text: textContent,
+        videoInfo: captionData.videoInfo,
+      },
+    };
+  } catch (error: any) {
+    console.error(`[Puppeteer] 자막 추출 실패: ${error.message}`);
+    throw error;
+  } finally {
+    // 브라우저 종료
+    await browser.close();
+    console.log("[Puppeteer] 브라우저 종료");
   }
 }
