@@ -20,6 +20,7 @@ import io
 import tempfile
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+import traceback
 
 # 로깅 설정
 logging.basicConfig(
@@ -31,21 +32,24 @@ logger = logging.getLogger("youtube_utils")
 # 전역 변수
 last_request_time = 0
 min_request_interval = 5  # 초 단위
-USE_BROWSER_FIRST = True  # Playwright 브라우저를 우선적으로 사용
+USE_BROWSER_FIRST = False  # Playwright 브라우저를 우선적으로 사용
 USE_BROWSER_FALLBACK = True  # yt-dlp 실패 시 Playwright 폴백 사용 여부
 USE_YTDLP_COOKIES = True  # yt-dlp에 쿠키 사용 여부
-USE_TOR_NETWORK = False  # Tor 네트워크 사용 여부 (설치 필요)
+USE_TOR_NETWORK = True  # Tor 네트워크 사용 활성화
 TOR_PROXY = "socks5://127.0.0.1:9050"  # Tor 프록시 주소 (기본값)
-USE_PROXIES = False  # 프록시 사용 여부 - 기본값 false로 변경
+USE_PROXIES = True  # 프록시 사용 여부 - 기본값 false로 변경
 
 # 프록시 관련 상수
 MAX_WORKERS = 10  # 프록시 테스트용 최대 워커 수
 BLACKLISTED_PROXY_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "blacklisted_proxies.txt")
 WORKING_PROXY_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "working_proxies.txt")
+# 쿠키 파일 경로 설정
+cookies_file = os.path.join(os.path.dirname(__file__), "..", "data", "youtube_cookies.txt")
 
 # 필요한 디렉토리 생성
 os.makedirs(os.path.dirname(BLACKLISTED_PROXY_PATH), exist_ok=True)
 os.makedirs(os.path.dirname(WORKING_PROXY_PATH), exist_ok=True)
+os.makedirs(os.path.dirname(cookies_file), exist_ok=True)
 
 
 class FreeProxyManager:
@@ -536,8 +540,13 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
     wait_time = max(1.0, min(8.0, wait_time))  # 1초에서 8초 사이로 제한
     await asyncio.sleep(wait_time)
     
+    # 비디오 URL 생성
+    url = f"https://www.youtube.com/watch?v={video_id}"
     logger.info(f"자막 추출 시작 - 비디오 ID: {video_id}, 언어: {language}")
-
+    
+    # 초기화
+    init_tools()
+    
     # 비디오 기본 정보 가져오기 (최소한의 정보)
     video_info = {
         'title': f"Video {video_id}",
@@ -554,66 +563,113 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
             "func": extract_subtitles_with_transcript_api,
             "args": [video_id, language, video_info]
         },
-        # 2단계: 외부 API 방식 시도 (빠르고 안정적)
+        # 2단계: yt-dlp + Tor 네트워크 (봇 감지 회피에 효과적)
+        {
+            "name": "yt-dlp + Tor",
+            "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
+            "args": [],
+            "condition": USE_TOR_NETWORK
+        },
+        # 3단계: 외부 API 방식 시도 (빠르고 안정적)
         {
             "name": "외부 API 서비스",
             "func": extract_subtitles_with_external_api,
             "args": [video_id, language, video_info]
         },
-        # 3단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
+        # 4단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
         {
             "name": "웹 스크래핑",
             "func": extract_subtitles_with_scraping,
             "args": [video_id, language, video_info]
         },
-        # 4단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
+        # 5단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
         {
             "name": "undetected_chromedriver",
             "func": extract_subtitles_with_undetected_chrome,
             "args": [video_id, language, video_info],
-            "condition": UNDETECTED_CHROME_AVAILABLE and random.random() < 0.7  # 70% 확률로만 시도
+            "condition": UNDETECTED_CHROME_AVAILABLE
         },
-        # 5단계: 일반 브라우저 방식 시도
+        # 6단계: 일반 브라우저 방식 시도
         {
             "name": "브라우저 자동화",
             "func": extract_subtitles_with_browser,
             "args": [video_id, language, video_info],
-            "condition": USE_BROWSER_FIRST  # 환경설정에 따라 실행 여부 결정
-        },
-        # 6단계: yt-dlp로 시도 (마지막 수단)
-        {
-            "name": "yt-dlp",
-            "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
-            "args": []
+            "condition": USE_BROWSER_FIRST
         }
     ]
+    
+    errors = {}
     
     # 각 방법 순차적으로 시도
     for method in extraction_methods:
         # 조건부 실행 (있는 경우만 확인)
         if "condition" in method and not method["condition"]:
+            logger.info(f"방법 '{method['name']}'는 비활성화되었습니다.")
             continue
             
-        logger.info(f"{method['name']} 방식으로 자막 추출 시도")
+        method_name = method["name"]
+        func = method["func"]
+        args = method["args"]
         
-        try:
-            success, result = await method["func"](*method["args"])
-            if success:
-                logger.info(f"{method['name']} 방식으로 자막 추출 성공")
-                return success, result
-            else:
-                logger.warning(f"{method['name']} 방식 실패, 다음 방법으로 진행")
-        except Exception as e:
-            logger.error(f"{method['name']} 시도 중 오류 발생: {str(e)}, 다음 방법으로 진행")
+        logger.info(f"방법 시도: {method_name}")
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"시도 {attempt+1}/{max_retries} - 방법: {method_name}")
+                
+                # 함수 호출 방식에 따라 처리
+                if callable(func):
+                    if asyncio.iscoroutinefunction(func):
+                        success, result = await func(*args)
+                    else:
+                        success, result = func(*args)
+                        
+                    if success:
+                        logger.info(f"방법 '{method_name}'으로 자막 추출 성공")
+                        last_request_time = time.time()  # 마지막 요청 시간 업데이트
+                        return success, result
+                    else:
+                        error_msg = result.get("message", "알 수 없는 오류")
+                        logger.warning(f"방법 '{method_name}' 실패: {error_msg}")
+                        errors[method_name] = error_msg
+                        
+                        # 비디오 액세스 불가/삭제됨을 감지하면 더 시도하지 않음
+                        if any(keyword in error_msg.lower() for keyword in 
+                               ["private", "removed", "unavailable", "deleted", "권한", "삭제", "제한"]):
+                            logger.error(f"비디오에 액세스할 수 없음: {error_msg}")
+                            return False, {
+                                "success": False, 
+                                "message": f"비디오에 액세스할 수 없음: {error_msg}",
+                                "errors": errors
+                            }
+                        
+                        # bot 감지/차단 관련 오류는 다음 방법으로 넘어감
+                        if any(keyword in error_msg.lower() for keyword in 
+                               ["bot", "captcha", "robot", "automated", "자동화", "차단"]):
+                            logger.warning(f"봇 감지됨, 다음 방법으로 진행: {error_msg}")
+                            break
+                            
+                # 다음 시도 전 대기 (시도마다 대기 시간 증가)
+                wait_time = (attempt + 1) * 2 + random.uniform(0.5, 2.0)
+                logger.info(f"다음 시도까지 {wait_time:.2f}초 대기")
+                await asyncio.sleep(wait_time)
+                
+            except Exception as e:
+                logger.error(f"방법 '{method_name}' 예외 발생: {str(e)}")
+                errors[method_name] = str(e)
+                traceback.print_exc()
+                
+                # 예외 후 대기
+                wait_time = (attempt + 1) * 2 + random.uniform(1.0, 3.0)
+                logger.info(f"예외 후 {wait_time:.2f}초 대기")
+                await asyncio.sleep(wait_time)
     
     # 모든 방법 실패
-    logger.error(f"모든 방법으로 자막 추출 실패: {video_id}")
-    
-    # 요청 시간 업데이트
-    last_request_time = time.time()
+    logger.error("모든 자막 추출 방법이 실패했습니다.")
     return False, {
-        'success': False,
-        'message': "Failed to extract subtitles after trying all methods"
+        "success": False,
+        "message": "모든 자막 추출 방법이 실패했습니다.",
+        "errors": errors
     }
 
 async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, Any], max_retries: int = 3) -> Tuple[bool, Dict[str, Any]]:
@@ -622,19 +678,31 @@ async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, A
     """
     for attempt in range(max_retries):
         try:
+            # Tor 사용 시 ID 변경 시도 (매 시도마다)
+            if USE_TOR_NETWORK and attempt > 0:
+                try:
+                    logger.info("Tor 네트워크 ID 변경 시도...")
+                    rotate_tor_identity()
+                    await asyncio.sleep(2)  # ID 변경 후 잠시 대기
+                except Exception as e:
+                    logger.warning(f"Tor ID 변경 실패 (무시): {str(e)}")
+            
             # 요청마다 다른 브라우저 지문 사용
             user_agent = get_random_browser_fingerprint()
             
             # 헤더 랜덤화
             http_headers = get_random_headers()
             
-            # 쿠키 설정
+            # 쿠키 설정 (쿠키 오류가 많아 사용 빈도 낮춤)
             cookie_file = None
-            if random.random() > 0.3 and USE_YTDLP_COOKIES:  # 70% 확률로 쿠키 사용
-                cookie_file = f"yt_cookies_{random.randint(1, 5)}.txt"
-                if not os.path.exists(cookie_file):
+            if random.random() > 0.7 and USE_YTDLP_COOKIES:  # 30% 확률로만 쿠키 사용
+                try:
+                    cookie_file = f"yt_cookies_{random.randint(1, 5)}.txt"
                     with open(cookie_file, 'w') as f:
                         f.write(create_youtube_cookies())
+                except Exception as e:
+                    logger.warning(f"쿠키 파일 생성 실패 (무시): {str(e)}")
+                    cookie_file = None
             
             # 인증 설정 추가
             auth_opts = setup_yt_auth(False)
@@ -652,6 +720,17 @@ async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, A
                 except:
                     pass
             
+            # 로그 수준 조정 (yt-dlp 자체 메시지 출력 제한)
+            if attempt > 0:
+                ydl_opts['quiet'] = True
+                ydl_opts['verbose'] = False
+            
+            # 실행 모드 로그
+            if USE_TOR_NETWORK:
+                logger.info(f"yt-dlp + Tor 시도 {attempt+1}/{max_retries}: {video_id}")
+            else:
+                logger.info(f"yt-dlp 시도 {attempt+1}/{max_retries}: {video_id}")
+            
             # yt-dlp는 비동기가 아니므로 run_in_executor를 사용하여 별도 스레드에서 실행
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, lambda: _run_ytdlp(video_id, ydl_opts, language, video_info))
@@ -666,6 +745,26 @@ async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, A
                     await asyncio.sleep(random.uniform(2, 5))
                     continue
             
+            # 쿠키 관련 오류는 쿠키 없이 재시도
+            if "invalid Netscape format cookies file" in result[1].get('message', '') and cookie_file:
+                logger.warning("쿠키 파일 오류. 쿠키 없이 재시도...")
+                
+                # 쿠키 파일 삭제
+                try:
+                    if os.path.exists(cookie_file):
+                        os.remove(cookie_file)
+                except:
+                    pass
+                
+                # 쿠키 없이 옵션 재설정
+                ydl_opts = get_ytdlp_base_options(video_id, language, user_agent, http_headers, None)
+                ydl_opts.update(auth_opts)
+                
+                # 재실행
+                result = await loop.run_in_executor(None, lambda: _run_ytdlp(video_id, ydl_opts, language, video_info))
+                if result[0]:  # 성공
+                    return result
+            
             # 기타 오류는 바로 반환
             return result
         
@@ -673,9 +772,18 @@ async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, A
             error_msg = str(e)
             logger.warning(f"yt-dlp 시도 {attempt+1}/{max_retries} 실패: {error_msg}")
             
-            if "HTTP Error 429" in error_msg or "Precondition check failed" in error_msg:  # 너무 많은 요청 또는 봇 감지
+            if "HTTP Error 429" in error_msg or "Precondition check failed" in error_msg or "Sign in to confirm you're not a bot" in error_msg:  # 너무 많은 요청 또는 봇 감지
                 wait_time = (2 ** attempt) * 10  # 지수 백오프
-                logger.info(f"{wait_time}초 대기 후 재시도합니다...")
+                logger.info(f"봇 감지됨. {wait_time}초 대기 후 재시도합니다...")
+                
+                # Tor 사용 시 ID 변경 시도
+                if USE_TOR_NETWORK:
+                    try:
+                        rotate_tor_identity()
+                        logger.info("Tor ID 변경됨. 새 IP로 재시도합니다.")
+                    except:
+                        pass
+                
                 await asyncio.sleep(wait_time)
             elif "This video is unavailable" in error_msg:
                 # 비디오 자체가 사용 불가능한 경우 더 이상 시도하지 않음
@@ -683,6 +791,10 @@ async def _run_ytdlp_async(video_id: str, language: str, video_info: Dict[str, A
                     'success': False,
                     'message': "Video is unavailable or private"
                 }
+            elif "invalid Netscape format cookies file" in error_msg:
+                # 쿠키 파일 오류는 무시하고 재시도
+                logger.warning("쿠키 파일 오류. 쿠키 없이 재시도합니다.")
+                continue
             elif attempt < max_retries - 1:
                 await asyncio.sleep(random.uniform(2, 5))  # 일반 오류 시 짧은 대기
             else:
@@ -1341,33 +1453,42 @@ def get_random_headers():
 
 def create_youtube_cookies():
     """
-    YouTube 접근을 위한 쿠키를 Netscape 형식으로 생성합니다.
-    yt-dlp는 이 형식을 요구합니다.
+    yt-dlp가 사용할 수 있는 형식의 YouTube 쿠키 파일을 생성합니다.
     """
-    # 랜덤 쿠키 ID 생성
-    pref_id = ''.join(random.choices('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=19))
-    visitor_id = ''.join(random.choices('0123456789abcdef', k=16))
-    ysc_id = ''.join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", k=11))
+    global cookies_file
     
-    # 쿠키 만료 시간 설정 (1-2개월 랜덤)
-    expires = int(time.time()) + random.randint(30, 60) * 24 * 3600
-    
-    # Netscape 형식 쿠키 파일 생성
-    # 형식: domain TAB flag TAB path TAB secure TAB expiration TAB name TAB value
-    cookies = [
-        "# Netscape HTTP Cookie File",
-        "# https://curl.haxx.se/docs/http-cookies.html",
-        "# This file was generated by youtube_utils.py",
-        "",
-        f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tPREF\tf6={pref_id}",
-        f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tVISITOR_INFO1_LIVE\t{visitor_id}",
-        f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tYSC\t{ysc_id}",
-        # 추가 쿠키 설정 (더 안정적인 접근을 위해)
-        f".youtube.com\tTRUE\t/\tFALSE\t{expires}\tCONSENT\tYES+cb.20210328-17-p0.en+FX+{random.randint(100, 999)}",
-        f"www.youtube.com\tTRUE\t/\tFALSE\t{expires}\tLOGIN_INFO\t{random.randint(1000000, 9999999)}%3A{random.randint(1000000, 9999999)}%3A{random.randint(1000000, 9999999)}"
-    ]
-    
-    return "\n".join(cookies)
+    try:
+        logger.info("YouTube 쿠키 파일 생성 중...")
+        
+        # 쿠키 디렉토리 생성
+        os.makedirs(os.path.dirname(cookies_file), exist_ok=True)
+        
+        # Netscape 쿠키 형식
+        cookie_header = "# Netscape HTTP Cookie File\n" + \
+                       "# https://curl.se/docs/http-cookies.html\n" + \
+                       "# This file was generated by youtube_utils.py\n\n"
+        
+        # 기본 YouTube 쿠키 (VISITOR_INFO1_LIVE 및 CONSENT)
+        # 형식: domain, flag, path, secure, expiry, name, value
+        cookies = [
+            ".youtube.com\tTRUE\t/\tFALSE\t2147483647\tVISITOR_INFO1_LIVE\tYT-Q1A2W3E4R5T6Y7U8I9O0P",
+            ".youtube.com\tTRUE\t/\tFALSE\t2147483647\tCONSENT\tYES+cb.20210328-17-p0.en+FX+123",
+            ".youtube.com\tTRUE\t/\tFALSE\t2147483647\tPREF\tf1=50000000&f6=8&hl=en",
+            ".youtube.com\tTRUE\t/\tFALSE\t2147483647\tYSC\tYT-Q1A2W3E4R5T6Y7U8I9O0P"
+        ]
+        
+        cookie_content = cookie_header + "\n".join(cookies)
+        
+        # 쿠키 파일 저장
+        with open(cookies_file, 'w', encoding='utf-8') as f:
+            f.write(cookie_content)
+            
+        logger.info(f"YouTube 쿠키 파일이 생성되었습니다: {cookies_file}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"YouTube 쿠키 파일 생성 중 오류 발생: {str(e)}")
+        return False
 
 def get_random_browser_fingerprint():
     # 다양한 브라우저 버전
@@ -1624,8 +1745,12 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
         'retry_sleep_functions': {'fragment': lambda n: 5 * (n + 1), 'file': lambda n: 5 * (n + 1)},
     }
     
-    # 프록시 설정 추가
-    if USE_PROXIES:
+    # Tor 프록시 사용 (우선)
+    if USE_TOR_NETWORK:
+        logger.info("Tor 프록시 사용")
+        options['proxy'] = TOR_PROXY
+    # 일반 프록시 사용 (Tor가 비활성화된 경우)
+    elif USE_PROXIES:
         proxy = get_random_proxy()
         if proxy:
             if 'http' in proxy:
@@ -1643,31 +1768,40 @@ def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None,
 def test_tor_connection():
     """
     Tor 네트워크 연결을 테스트합니다.
+    연결이 안 되면 설치 방법을 안내합니다.
     """
     if not USE_TOR_NETWORK:
         return False
     
     try:
         import requests
-        import socks
-        import socket
         
-        # Tor SOCKS 프록시 설정
-        socks.set_default_proxy(socks.SOCKS5, "127.0.0.1", 9050)
-        socket.socket = socks.socksocket
+        # 직접 프록시 사용 방식으로 요청
+        proxies = {
+            'http': TOR_PROXY,
+            'https': TOR_PROXY
+        }
         
         # Tor 네트워크를 통해 요청
-        response = requests.get('https://check.torproject.org/', timeout=10)
+        response = requests.get('https://check.torproject.org/', 
+                              proxies=proxies, 
+                              timeout=10,
+                              verify=False)
         
         # Tor 사용 여부 확인
-        if 'Congratulations. This browser is configured to use Tor' in response.text:
-            logger.info("Tor 네트워크 연결 성공")
+        if 'Congratulations' in response.text and 'Tor' in response.text:
+            logger.info("✅ Tor 네트워크 연결 성공")
             return True
         else:
-            logger.warning("Tor 연결 실패: Tor 네트워크를 통과하지 않음")
+            logger.warning("❌ Tor 연결 실패: Tor 네트워크를 통과하지 않음")
+            logger.warning("Tor 서비스 설치 및 실행 방법:")
+            logger.warning("Ubuntu/Debian: sudo apt-get install tor && sudo service tor start")
+            logger.warning("MacOS: brew install tor && brew services start tor")
+            logger.warning("Windows: https://www.torproject.org/download/")
             return False
     except Exception as e:
-        logger.error(f"Tor 연결 테스트 실패: {str(e)}")
+        logger.error(f"❌ Tor 연결 테스트 실패: {str(e)}")
+        logger.warning("Tor 서비스가 실행 중인지 확인하세요.")
         return False
 
 # Tor 네트워크 IP 변경 (새 경로)
@@ -2431,3 +2565,85 @@ async def extract_subtitles_with_undetected_chrome(video_id: str, language: str,
             'success': False,
             'message': f"Async execution error with undetected_chromedriver: {str(e)}"
         }
+
+# 초기화 함수: 필요한 도구들을 설치하고 설정합니다.
+def init_tools():
+    """
+    필요한 도구와 서비스를 초기화합니다.
+    """
+    global USE_TOR_NETWORK
+    
+    # 토르 네트워크 연결 테스트
+    if USE_TOR_NETWORK:
+        try:
+            if not test_tor_connection():
+                logger.warning("Tor 연결이 작동하지 않습니다. USE_TOR_NETWORK를 False로 설정합니다.")
+                USE_TOR_NETWORK = False
+            else:
+                logger.info("Tor 연결이 정상적으로 작동합니다.")
+        except Exception as e:
+            logger.error(f"Tor 연결 테스트 중 오류 발생: {str(e)}")
+            USE_TOR_NETWORK = False
+    
+    # 쿠키 설정 확인
+    global cookies_file
+    if not os.path.exists(cookies_file):
+        create_youtube_cookies()
+        logger.info(f"YouTube 쿠키 파일이 생성되었습니다: {cookies_file}")
+    else:
+        logger.info(f"기존 YouTube 쿠키 파일을 사용합니다: {cookies_file}")
+    
+    # Playwright 브라우저 설치 확인
+    try:
+        import subprocess
+        logger.info("Playwright 브라우저 설치 확인 중...")
+        subprocess.run(["python", "-m", "playwright", "install", "chromium"], 
+                      check=True, capture_output=True)
+        logger.info("Playwright 브라우저가 설치되었습니다.")
+    except Exception as e:
+        logger.warning(f"Playwright 브라우저 설치 확인 중 오류 발생: {str(e)}")
+
+def test_tor_connection():
+    """
+    Tor 네트워크 연결을 테스트합니다.
+    
+    Returns:
+        bool: 연결 성공 여부
+    """
+    import requests
+    
+    try:
+        # Tor SOCKS 프록시 설정
+        proxies = {
+            'http': TOR_PROXY,
+            'https': TOR_PROXY
+        }
+        
+        # 테스트 서비스에 연결 시도
+        check_url = "https://check.torproject.org/api/ip"
+        logger.info(f"Tor 연결 테스트 중: {check_url}")
+        
+        # 타임아웃 설정 (초)
+        timeout = 10
+        
+        # 요청 보내기
+        response = requests.get(check_url, proxies=proxies, timeout=timeout)
+        data = response.json()
+        
+        # Tor 출구 노드인지 확인
+        if data.get('IsTor', False):
+            logger.info(f"Tor 연결 성공! IP: {data.get('IP')}")
+            return True
+        else:
+            logger.warning(f"Tor 출구 노드가 아닙니다. IP: {data.get('IP')}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Tor 연결 테스트 실패: {str(e)}")
+        return False
+
+# 애플리케이션 시작 시 초기화
+try:
+    init_tools()
+except Exception as e:
+    logger.error(f"❌ 도구 초기화 중 오류: {str(e)}")
