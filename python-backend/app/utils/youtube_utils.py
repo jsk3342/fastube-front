@@ -579,78 +579,44 @@ async def get_subtitles(video_id: str, language: str, max_retries=3, use_auth=Fa
         }
         logger.error(f"비디오 정보 가져오기 예외 발생: {str(e)}, 기본 정보 사용")
     
-    # 시도 순서는 성공 가능성이 높은 것부터 차례로
-    # 컨테이너 환경에서는 리소스 효율적인 방법만 사용
-    if RUNNING_IN_CONTAINER:
-        logger.info("컨테이너 환경에 최적화된 추출 방법을 사용합니다.")
-        extraction_methods = [
-            # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
-            {
-                "name": "YouTube Transcript API",
-                "func": extract_subtitles_with_transcript_api,
-                "args": [video_id, language, video_info]
-            },
-            # 2단계: 외부 API 방식 시도 (빠르고 안정적)
-            {
-                "name": "외부 API 서비스",
-                "func": extract_subtitles_with_external_api,
-                "args": [video_id, language, video_info]
-            },
-            # 3단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
-            {
-                "name": "웹 스크래핑",
-                "func": extract_subtitles_with_scraping,
-                "args": [video_id, language, video_info]
-            },
-            # 4단계: yt-dlp (마지막 시도)
-            {
-                "name": "일반 yt-dlp",
-                "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
-                "args": []
-            }
-        ]
-    else:
-        extraction_methods = [
-            # 1단계: YouTube Transcript API (가장 빠르고 신뢰성 높음)
-            {
-                "name": "YouTube Transcript API",
-                "func": extract_subtitles_with_transcript_api,
-                "args": [video_id, language, video_info]
-            },
-            # 2단계: yt-dlp + Tor 네트워크 (봇 감지 회피에 효과적)
-            {
-                "name": "yt-dlp + Tor",
-                "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
-                "args": [],
-                "condition": USE_TOR_NETWORK
-            },
-            # 3단계: 외부 API 방식 시도 (빠르고 안정적)
-            {
-                "name": "외부 API 서비스",
-                "func": extract_subtitles_with_external_api,
-                "args": [video_id, language, video_info]
-            },
-            # 4단계: 웹 스크래핑 방식 시도 (브라우저보다 빠름)
-            {
-                "name": "웹 스크래핑",
-                "func": extract_subtitles_with_scraping,
-                "args": [video_id, language, video_info]
-            },
-            # 5단계: undetected_chromedriver (봇 감지 회피에 효과적이지만 느림)
-            {
-                "name": "undetected_chromedriver",
-                "func": extract_subtitles_with_undetected_chrome,
-                "args": [video_id, language, video_info],
-                "condition": UNDETECTED_CHROME_AVAILABLE
-            },
-            # 6단계: 일반 브라우저 방식 시도
-            {
-                "name": "브라우저 자동화",
-                "func": extract_subtitles_with_browser,
-                "args": [video_id, language, video_info],
-                "condition": USE_BROWSER_FIRST
-            }
-        ]
+    # 성능 최적화: YouTube Transcript API만 사용하고 나머지는 주석 처리
+    extraction_methods = [
+        # YouTube Transcript API (가장 빠르고 신뢰성 높음)
+        {
+            "name": "YouTube Transcript API",
+            "func": extract_subtitles_with_transcript_api,
+            "args": [video_id, language, video_info]
+        },
+        # 나머지 방법은 주석 처리 (성능 최적화)
+        # {
+        #     "name": "yt-dlp + Tor",
+        #     "func": lambda *args: _run_ytdlp_async(video_id, language, video_info, max_retries),
+        #     "args": [],
+        #     "condition": USE_TOR_NETWORK
+        # },
+        # {
+        #     "name": "외부 API 서비스",
+        #     "func": extract_subtitles_with_external_api,
+        #     "args": [video_id, language, video_info]
+        # },
+        # {
+        #     "name": "웹 스크래핑",
+        #     "func": extract_subtitles_with_scraping,
+        #     "args": [video_id, language, video_info]
+        # },
+        # {
+        #     "name": "undetected_chromedriver",
+        #     "func": extract_subtitles_with_undetected_chrome,
+        #     "args": [video_id, language, video_info],
+        #     "condition": UNDETECTED_CHROME_AVAILABLE
+        # },
+        # {
+        #     "name": "브라우저 자동화",
+        #     "func": extract_subtitles_with_browser,
+        #     "args": [video_id, language, video_info],
+        #     "condition": USE_BROWSER_FIRST
+        # }
+    ]
     
     errors = {}
     
@@ -1602,7 +1568,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
     logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
     
     try:
-        # 자막 언어 코드 매핑
+        # 자막 언어 코드 매핑 (요청된 언어에 대한 여러 형식 시도)
         lang_code_map = {
             'ko': ['ko', 'ko-KR'],
             'en': ['en', 'en-US', 'en-GB'],
@@ -1615,13 +1581,9 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
         # 요청 언어에 대한 다양한 코드 시도
         target_langs = lang_code_map.get(language, [language])
         
-        # 다른 언어로 폴백 할지 여부 (예: 한국어가 없으면 영어)
-        use_fallback = True
-        
-        # 시도할 모든 언어 코드 목록
+        # 클라이언트가 특정 언어를 요청한 경우 해당 언어만 시도
+        # 다른 언어로 폴백하지 않음 (서버 부하 감소)
         all_langs = target_langs.copy()
-        if use_fallback and language != 'en':
-            all_langs.extend(['en', 'en-US', 'en-GB'])
             
         transcript = None
         available_langs = []
@@ -1728,12 +1690,22 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
             except Exception as e:
                 logger.error(f"트랜스크립트 데이터 가져오기 실패: {str(e)}")
         
-        # 자막을 찾지 못한 경우
-        logger.error(f"YouTube Transcript API로 자막을 찾을 수 없음: {video_id}")
-        return False, {
-            'success': False,
-            'message': f"Could not find captions for video: {video_id} (YouTube Transcript API method failed)"
-        }
+        # 요청한 언어의 자막을 찾지 못한 경우
+        if available_langs:
+            available_str = ", ".join(available_langs)
+            logger.error(f"요청한 언어({language})의 자막을 찾을 수 없음. 사용 가능한 언어: {available_str}")
+            return False, {
+                'success': False,
+                'message': f"Cannot find {language} captions for this video. Available languages: {available_str}",
+                'availableLanguages': available_langs  # 사용 가능한 언어 목록 반환
+            }
+        else:
+            # 사용 가능한 자막이 없는 경우
+            logger.error(f"YouTube Transcript API로 자막을 찾을 수 없음: {video_id}")
+            return False, {
+                'success': False,
+                'message': f"Could not find captions for video: {video_id} (YouTube Transcript API method failed)"
+            }
     
     except _errors.TranscriptsDisabled:
         logger.error(f"비디오에 자막이 비활성화됨: {video_id}")
