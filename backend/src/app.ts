@@ -1,4 +1,9 @@
-import express from "express";
+import express, {
+  Request,
+  Response,
+  NextFunction,
+  ErrorRequestHandler,
+} from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -42,7 +47,7 @@ if (!isProduction) {
 const apiPrefix = config.apiPrefix;
 
 // 기본 경로 핸들러 추가
-app.get("/", (req, res) => {
+app.get("/", (req: Request, res: Response) => {
   res.json({
     status: "ok",
     message: "Fastube API Server is running",
@@ -75,7 +80,8 @@ app.get(
 app.use(notFoundMiddleware);
 
 // 글로벌 에러 핸들러 - 서버리스 환경에서도 안정적으로 작동하도록
-app.use((err, req, res, next) => {
+// 여기에 타입을 명시해야 합니다!
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   console.error(`[Error]: ${err.message}`);
   if (err.stack && !isProduction) {
     console.error(err.stack);
