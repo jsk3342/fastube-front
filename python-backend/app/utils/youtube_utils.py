@@ -1588,51 +1588,46 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
         
         if need_video_info:
             try:
-                # YouTube 페이지에서 직접 메타데이터 추출 (빠른 방법)
-                url = f"https://www.youtube.com/watch?v={video_id}"
-                headers = {
-                    'User-Agent': get_random_browser_fingerprint(),
-                    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
-                }
-                # SSL 인증서 검증 비활성화 (봇 감지 회피)
-                response = requests.get(url, headers=headers, timeout=3, verify=False)
-                
-                if response.status_code == 200:
-                    # BeautifulSoup으로 메타 태그 추출
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 메타 태그에서 비디오 정보 추출
-                    title_tag = soup.find('meta', property='og:title')
-                    if title_tag and title_tag.get('content'):
-                        video_info['title'] = title_tag.get('content')
-                    
-                    channel_tag = soup.find('meta', property='og:video:tag') or soup.find('meta', itemprop='channelName')
-                    if channel_tag and channel_tag.get('content'):
-                        video_info['channelName'] = channel_tag.get('content')
-                    
-                    thumbnail_tag = soup.find('meta', property='og:image')
-                    if thumbnail_tag and thumbnail_tag.get('content'):
-                        video_info['thumbnailUrl'] = thumbnail_tag.get('content')
-                    
-                    logger.info(f"YouTube 페이지에서 메타데이터 추출 성공: {video_info['title']}")
+                # 비디오 정보 업데이트 시도
+                updated_info = extract_minimal_video_info_from_html(video_id)
+                if updated_info:
+                    # 기존 video_info에 없는 정보만 업데이트
+                    for key, value in updated_info.items():
+                        if key in ['title', 'channel_name', 'thumbnail_url']:
+                            target_key = key
+                            if key == 'channel_name':
+                                target_key = 'channelName'
+                            elif key == 'thumbnail_url':
+                                target_key = 'thumbnailUrl'
+                                
+                            # 기존 값이 Unknown일 때만 업데이트
+                            if target_key in video_info and video_info[target_key] == 'Unknown':
+                                video_info[target_key] = value
+                                
+                logger.info(f"HTML에서 비디오 정보 추출 성공: {video_info}")
             except Exception as e:
-                logger.warning(f"메타데이터 추출 실패 (계속 진행): {str(e)}")
+                logger.warning(f"HTML에서 비디오 정보 추출 실패: {str(e)}")
         
-        # 자막 언어 코드 매핑 (요청된 언어에 대한 여러 형식 시도)
+        # 자막 변환을 위한 언어 코드 매핑 (최적화: 일반적인 언어 코드만 포함)
         lang_code_map = {
             'ko': ['ko', 'ko-KR'],
             'en': ['en', 'en-US'],
             'ja': ['ja', 'ja-JP'],
             'zh': ['zh', 'zh-CN', 'zh-TW'],
+            'es': ['es', 'es-ES'],
             'fr': ['fr', 'fr-FR'],
             'de': ['de', 'de-DE'],
+            'ru': ['ru', 'ru-RU'],
+            'pt': ['pt', 'pt-BR', 'pt-PT'],
+            'it': ['it', 'it-IT']
         }
         
-        # 요청 언어에 대한 다양한 코드 시도 (최대 2개까지만)
+        # 요청 언어에 대한 코드를 최대 1개만 사용 (최적화)
         target_langs = lang_code_map.get(language, [language])
-        if len(target_langs) > 2:
-            target_langs = target_langs[:2]  # 최대 2개 언어 코드만 시도 (시간 단축)
+        if len(target_langs) > 1:
+            target_langs = [target_langs[0]]  # 첫 번째 언어 코드만 사용 (시간 단축)
+        
+        logger.info(f"요청 언어 {language}에 대해 시도할 언어 코드: {target_langs[0]}")
             
         # 사용 가능한 자막 목록 가져오기
         available_langs = []
@@ -1642,18 +1637,29 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
             # 단일 요청으로 처리
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             
-            # 자막 정보를 모두 가져와서 처리
-            for transcript_item in transcript_list:
-                available_langs.append(transcript_item.language_code)
+            # 디버그 모드가 아닌 경우 간단히 처리 (최적화)
+            if logger.level <= logging.DEBUG:
+                # 디버그 모드일 경우만 전체 목록 로깅
+                for transcript_item in transcript_list:
+                    available_langs.append(transcript_item.language_code)
+                    
+                    # 원하는 언어와 일치하는지 확인 (첫 번째 일치하는 것 사용)
+                    if transcript_item.language_code in target_langs:
+                        transcript = transcript_item
+                        logger.debug(f"자막 발견: {transcript_item.language_code}")
+                        break
                 
-                # 원하는 언어와 일치하는지 확인 (첫 번째 일치하는 것 사용)
-                if transcript_item.language_code in target_langs:
-                    transcript = transcript_item
-                    logger.info(f"자막 발견: {transcript_item.language_code}")
-                    break
-            
-            if available_langs:
-                logger.info(f"사용 가능한 자막: {available_langs}")
+                if available_langs:
+                    logger.debug(f"사용 가능한 자막: {available_langs}")
+            else:
+                # 디버그 모드가 아닐 경우 바로 원하는 언어만 찾기
+                for transcript_item in transcript_list:
+                    # 모든 언어를 순회하지 않고 원하는 언어만 확인
+                    if transcript_item.language_code in target_langs:
+                        transcript = transcript_item
+                        available_langs.append(transcript_item.language_code)
+                        logger.info(f"자막 발견: {transcript_item.language_code}")
+                        break
         except Exception as e:
             logger.warning(f"트랜스크립트 목록 가져오기 실패: {str(e)}")
         
@@ -1691,7 +1697,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         except:
                             pass
                     
-                    # 로그에 실제 비디오 정보 표시
+                    # 최종 비디오 정보 로그
                     logger.info(f"최종 비디오 정보: {video_info}")
                     
                     # 실제 비디오 정보를 반환 결과에 포함
@@ -1710,6 +1716,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
         if not transcript and target_langs:
             try:
                 lang_to_try = target_langs[0]  # 첫 번째 언어 코드만 시도
+                logger.info(f"직접 요청으로 자막 시도: {lang_to_try}")
                 transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_to_try])
                 
                 # 자막 텍스트 및 서브타이틀 항목 생성
@@ -1738,7 +1745,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         }
                     }
             except Exception as e:
-                logger.warning(f"직접 자막 요청 실패: {str(e)}")
+                logger.warning(f"직접 자막 요청({lang_to_try}) 실패: {str(e)}")
         
         # 요청한 언어의 자막을 찾지 못한 경우
         if available_langs:
@@ -1982,101 +1989,80 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
         
         if need_video_info:
             try:
-                # YouTube 페이지에서 직접 메타데이터 추출 (빠른 방법)
-                url = f"https://www.youtube.com/watch?v={video_id}"
-                headers = {
-                    'User-Agent': get_random_browser_fingerprint(),
-                    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Referer': 'https://www.youtube.com/',
-                    'Upgrade-Insecure-Requests': '1'
-                }
-                
-                # API 요청 간 시간 간격 유지 (봇 감지 회피)
-                time.sleep(random.uniform(0.2, 0.7))
-                
-                # SSL 인증서 검증 비활성화 (봇 감지 회피)
-                session = requests.Session()
-                response = session.get(url, headers=headers, timeout=5, verify=False)
-                
-                if response.status_code == 200:
-                    # BeautifulSoup으로 메타 태그 추출
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 메타 태그에서 비디오 정보 추출
-                    title_tag = soup.find('meta', property='og:title')
-                    if title_tag and title_tag.get('content'):
-                        video_info['title'] = title_tag.get('content')
-                    
-                    channel_tag = soup.find('meta', property='og:video:tag') or soup.find('meta', itemprop='channelName')
-                    if channel_tag and channel_tag.get('content'):
-                        video_info['channelName'] = channel_tag.get('content')
-                    
-                    thumbnail_tag = soup.find('meta', property='og:image')
-                    if thumbnail_tag and thumbnail_tag.get('content'):
-                        video_info['thumbnailUrl'] = thumbnail_tag.get('content')
-                    
-                    logger.info(f"YouTube 페이지에서 메타데이터 추출 성공: {video_info['title']}")
+                # 비디오 정보 업데이트 시도
+                updated_info = extract_minimal_video_info_from_html(video_id)
+                if updated_info:
+                    # 기존 video_info에 없는 정보만 업데이트
+                    for key, value in updated_info.items():
+                        if key in ['title', 'channel_name', 'thumbnail_url']:
+                            target_key = key
+                            if key == 'channel_name':
+                                target_key = 'channelName'
+                            elif key == 'thumbnail_url':
+                                target_key = 'thumbnailUrl'
+                                
+                            # 기존 값이 Unknown일 때만 업데이트
+                            if target_key in video_info and video_info[target_key] == 'Unknown':
+                                video_info[target_key] = value
+                                
+                logger.info(f"HTML에서 비디오 정보 추출 성공: {video_info}")
             except Exception as e:
-                logger.warning(f"메타데이터 추출 실패 (계속 진행): {str(e)}")
+                logger.warning(f"HTML에서 비디오 정보 추출 실패: {str(e)}")
         
-        # 자막 언어 코드 매핑 (요청된 언어에 대한 여러 형식 시도)
+        # 자막 변환을 위한 언어 코드 매핑 (최적화: 일반적인 언어 코드만 포함)
         lang_code_map = {
             'ko': ['ko', 'ko-KR'],
-            'en': ['en', 'en-US', 'en-GB'],
+            'en': ['en', 'en-US'],
             'ja': ['ja', 'ja-JP'],
             'zh': ['zh', 'zh-CN', 'zh-TW'],
+            'es': ['es', 'es-ES'],
             'fr': ['fr', 'fr-FR'],
             'de': ['de', 'de-DE'],
+            'ru': ['ru', 'ru-RU'],
+            'pt': ['pt', 'pt-BR', 'pt-PT'],
+            'it': ['it', 'it-IT']
         }
         
-        # 요청 언어에 대한 다양한 코드 시도 (최대 3개까지)
+        # 요청 언어에 대한 코드를 최대 1개만 사용 (최적화)
         target_langs = lang_code_map.get(language, [language])
-        if len(target_langs) > 3:
-            target_langs = target_langs[:3]  # 최대 3개 언어 코드 시도
+        if len(target_langs) > 1:
+            target_langs = [target_langs[0]]  # 첫 번째 언어 코드만 사용 (시간 단축)
+        
+        logger.info(f"요청 언어 {language}에 대해 시도할 언어 코드: {target_langs[0]}")
             
         # 사용 가능한 자막 목록 가져오기
         available_langs = []
         transcript = None
         
-        # 3번까지 재시도
-        for attempt in range(3):
-            try:
-                # 단일 요청으로 처리
-                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                
-                # 자막 정보를 모두 가져와서 처리
+        try:
+            # 단일 요청으로 처리
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # 디버그 모드가 아닌 경우 간단히 처리 (최적화)
+            if logger.level <= logging.DEBUG:
+                # 디버그 모드일 경우만 전체 목록 로깅
                 for transcript_item in transcript_list:
                     available_langs.append(transcript_item.language_code)
                     
                     # 원하는 언어와 일치하는지 확인 (첫 번째 일치하는 것 사용)
                     if transcript_item.language_code in target_langs:
                         transcript = transcript_item
-                        logger.info(f"자막 발견: {transcript_item.language_code}")
+                        logger.debug(f"자막 발견: {transcript_item.language_code}")
                         break
                 
                 if available_langs:
-                    logger.info(f"사용 가능한 자막: {available_langs}")
-                    
-                # 자막을 찾았거나 사용 가능한 자막 목록을 얻었으면 재시도 중단
-                if transcript or available_langs:
-                    break
-                    
-            except Exception as e:
-                # 재시도 결정
-                error_str = str(e)
-                logger.warning(f"트랜스크립트 목록 가져오기 실패 (시도 {attempt+1}/3): {error_str}")
-                
-                # 네트워크 오류나 일시적 오류일 경우만 재시도
-                if "503" in error_str or "429" in error_str or "timeout" in error_str.lower():
-                    time.sleep(random.uniform(1.0, 2.0))  # 재시도 전 대기
-                else:
-                    # 자막이 없거나 비활성화된 경우는 재시도하지 않음
-                    if "Subtitles are disabled" in error_str or "No transcripts" in error_str:
+                    logger.debug(f"사용 가능한 자막: {available_langs}")
+            else:
+                # 디버그 모드가 아닐 경우 바로 원하는 언어만 찾기
+                for transcript_item in transcript_list:
+                    # 모든 언어를 순회하지 않고 원하는 언어만 확인
+                    if transcript_item.language_code in target_langs:
+                        transcript = transcript_item
+                        available_langs.append(transcript_item.language_code)
+                        logger.info(f"자막 발견: {transcript_item.language_code}")
                         break
-                    # 기타 오류는 짧은 대기 후 재시도
-                    time.sleep(random.uniform(0.5, 1.0))
+        except Exception as e:
+            logger.warning(f"트랜스크립트 목록 가져오기 실패: {str(e)}")
         
         # 자막 발견된 경우 처리
         if transcript:
@@ -2112,7 +2098,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         except:
                             pass
                     
-                    # 로그에 실제 비디오 정보 표시
+                    # 최종 비디오 정보 로그
                     logger.info(f"최종 비디오 정보: {video_info}")
                     
                     # 실제 비디오 정보를 반환 결과에 포함
@@ -2127,42 +2113,40 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
             except Exception as e:
                 logger.error(f"자막 데이터 처리 중 오류: {str(e)}")
         
-        # 직접 특정 언어 요청으로 시도 (모든 언어 코드 시도)
+        # 직접 특정 언어 요청으로 시도 (최대 효율화를 위해 단 한 번만 시도)
         if not transcript and target_langs:
-            for lang_to_try in target_langs:
-                try:
-                    # 봇 탐지 방지를 위한 대기
-                    time.sleep(random.uniform(0.3, 0.8))
+            try:
+                lang_to_try = target_langs[0]  # 첫 번째 언어 코드만 시도
+                logger.info(f"직접 요청으로 자막 시도: {lang_to_try}")
+                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_to_try])
+                
+                # 자막 텍스트 및 서브타이틀 항목 생성
+                subtitle_lines = []
+                for item in transcript_data:
+                    text = item.get('text', '').strip()
+                    if text:
+                        subtitle_lines.append(text)
+                
+                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
+                subtitles = convert_transcript_api_format(transcript_data)
+                
+                if subtitle_text:
+                    logger.info(f"직접 요청으로 자막 추출 성공: {len(subtitle_text)} 자")
                     
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_to_try])
+                    # 최종 비디오 정보 로그
+                    logger.info(f"최종 비디오 정보: {video_info}")
                     
-                    # 자막 텍스트 및 서브타이틀 항목 생성
-                    subtitle_lines = []
-                    for item in transcript_data:
-                        text = item.get('text', '').strip()
-                        if text:
-                            subtitle_lines.append(text)
-                    
-                    subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
-                    subtitles = convert_transcript_api_format(transcript_data)
-                    
-                    if subtitle_text:
-                        logger.info(f"직접 요청({lang_to_try})으로 자막 추출 성공: {len(subtitle_text)} 자")
-                        
-                        # 최종 비디오 정보 로그
-                        logger.info(f"최종 비디오 정보: {video_info}")
-                        
-                        # 실제 비디오 정보를 반환 결과에 포함
-                        return True, {
-                            'success': True,
-                            'data': {
-                                'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
-                                'subtitles': subtitles,
-                                'videoInfo': video_info
-                            }
+                    # 실제 비디오 정보를 반환 결과에 포함
+                    return True, {
+                        'success': True,
+                        'data': {
+                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
+                            'subtitles': subtitles,
+                            'videoInfo': video_info
                         }
-                except Exception as e:
-                    logger.warning(f"직접 자막 요청({lang_to_try}) 실패: {str(e)}")
+                    }
+            except Exception as e:
+                logger.warning(f"직접 자막 요청({lang_to_try}) 실패: {str(e)}")
         
         # 요청한 언어의 자막을 찾지 못한 경우
         if available_langs:
@@ -2241,9 +2225,18 @@ def test_tor_connection():
     """
     Tor 네트워크 연결을 테스트합니다.
     성공 시 True를 반환하고, 실패 시 False를 반환합니다.
+    SSL 인증서 검증을 비활성화하여 컨테이너 환경에서도 작동하도록 최적화했습니다.
     """
     try:
-        # 짧은 타임아웃으로 Tor 상태 확인 (5초)
+        # SSL 경고 무시
+        import warnings
+        from urllib3.exceptions import InsecureRequestWarning
+        warnings.filterwarnings('ignore', category=InsecureRequestWarning)
+        
+        # Tor SOCKS 포트 설정 (컨테이너에서는 일반적으로 9050)
+        tor_socks_port = 9050
+        TOR_PROXY = f"socks5://127.0.0.1:{tor_socks_port}"
+        
         logger.info("Tor 연결 테스트 중: https://check.torproject.org/api/ip")
         
         # 세션 생성 및 프록시 설정
@@ -2253,10 +2246,10 @@ def test_tor_connection():
             'https': TOR_PROXY
         }
         
-        # 연결 테스트 (SSL 인증서 검증 비활성화)
+        # 연결 테스트 (SSL 인증서 검증 비활성화, 타임아웃 증가)
         response = session.get(
             'https://check.torproject.org/api/ip', 
-            timeout=5,
+            timeout=10,  # 타임아웃 증가 (컨테이너에서는 더 많은 시간이 필요할 수 있음)
             verify=False  # SSL 인증서 검증 비활성화
         )
         
@@ -2267,6 +2260,8 @@ def test_tor_connection():
                 return True
             else:
                 logger.warning("Tor 연결 실패: Tor 네트워크가 아닙니다.")
+                # 바로 대체 테스트로 넘어가지 않고 추가 정보 로깅
+                logger.info(f"응답 데이터: {data}")
                 return False
         else:
             logger.warning(f"Tor 연결 실패: 상태 코드 {response.status_code}")
@@ -2274,22 +2269,31 @@ def test_tor_connection():
             
     except Exception as e:
         logger.warning(f"Tor 연결 테스트 실패: {str(e)}")
-        # 기본 IP 테스트 사이트로 재시도
-        try:
-            session = requests.Session()
-            session.proxies = {
-                'http': TOR_PROXY,
-                'https': TOR_PROXY
-            }
-            response = session.get('http://httpbin.org/ip', timeout=5, verify=False)
-            if response.status_code == 200:
-                logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', '알 수 없음')}")
-                return True
-            else:
-                return False
-        except Exception as e2:
-            logger.error(f"대체 Tor 테스트도 실패: {str(e2)}")
-            return False
+        # 여러 대체 테스트 사이트 시도
+        alt_sites = [
+            'http://httpbin.org/ip',
+            'https://api.ipify.org?format=json',
+            'http://ip-api.com/json'
+        ]
+        
+        for site in alt_sites:
+            try:
+                logger.info(f"대체 사이트로 Tor 테스트 시도: {site}")
+                session = requests.Session()
+                session.proxies = {
+                    'http': TOR_PROXY,
+                    'https': TOR_PROXY
+                }
+                response = session.get(site, timeout=10, verify=False)
+                if response.status_code == 200:
+                    logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', response.text[:50])}")
+                    return True
+            except Exception as e2:
+                logger.warning(f"대체 테스트 실패 ({site}): {str(e2)}")
+                continue
+        
+        logger.error("모든 Tor 테스트 실패")
+        return False
 
 # Tor 네트워크 IP 변경 (새 경로)
 def rotate_tor_identity():
@@ -3108,9 +3112,18 @@ def test_tor_connection():
     """
     Tor 네트워크 연결을 테스트합니다.
     성공 시 True를 반환하고, 실패 시 False를 반환합니다.
+    SSL 인증서 검증을 비활성화하여 컨테이너 환경에서도 작동하도록 최적화했습니다.
     """
     try:
-        # 짧은 타임아웃으로 Tor 상태 확인 (5초)
+        # SSL 경고 무시
+        import warnings
+        from urllib3.exceptions import InsecureRequestWarning
+        warnings.filterwarnings('ignore', category=InsecureRequestWarning)
+        
+        # Tor SOCKS 포트 설정 (컨테이너에서는 일반적으로 9050)
+        tor_socks_port = 9050
+        TOR_PROXY = f"socks5://127.0.0.1:{tor_socks_port}"
+        
         logger.info("Tor 연결 테스트 중: https://check.torproject.org/api/ip")
         
         # 세션 생성 및 프록시 설정
@@ -3120,10 +3133,10 @@ def test_tor_connection():
             'https': TOR_PROXY
         }
         
-        # 연결 테스트 (SSL 인증서 검증 비활성화)
+        # 연결 테스트 (SSL 인증서 검증 비활성화, 타임아웃 증가)
         response = session.get(
             'https://check.torproject.org/api/ip', 
-            timeout=5,
+            timeout=10,  # 타임아웃 증가 (컨테이너에서는 더 많은 시간이 필요할 수 있음)
             verify=False  # SSL 인증서 검증 비활성화
         )
         
@@ -3134,6 +3147,8 @@ def test_tor_connection():
                 return True
             else:
                 logger.warning("Tor 연결 실패: Tor 네트워크가 아닙니다.")
+                # 바로 대체 테스트로 넘어가지 않고 추가 정보 로깅
+                logger.info(f"응답 데이터: {data}")
                 return False
         else:
             logger.warning(f"Tor 연결 실패: 상태 코드 {response.status_code}")
@@ -3141,22 +3156,31 @@ def test_tor_connection():
             
     except Exception as e:
         logger.warning(f"Tor 연결 테스트 실패: {str(e)}")
-        # 기본 IP 테스트 사이트로 재시도
-        try:
-            session = requests.Session()
-            session.proxies = {
-                'http': TOR_PROXY,
-                'https': TOR_PROXY
-            }
-            response = session.get('http://httpbin.org/ip', timeout=5, verify=False)
-            if response.status_code == 200:
-                logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', '알 수 없음')}")
-                return True
-            else:
-                return False
-        except Exception as e2:
-            logger.error(f"대체 Tor 테스트도 실패: {str(e2)}")
-            return False
+        # 여러 대체 테스트 사이트 시도
+        alt_sites = [
+            'http://httpbin.org/ip',
+            'https://api.ipify.org?format=json',
+            'http://ip-api.com/json'
+        ]
+        
+        for site in alt_sites:
+            try:
+                logger.info(f"대체 사이트로 Tor 테스트 시도: {site}")
+                session = requests.Session()
+                session.proxies = {
+                    'http': TOR_PROXY,
+                    'https': TOR_PROXY
+                }
+                response = session.get(site, timeout=10, verify=False)
+                if response.status_code == 200:
+                    logger.info(f"대체 테스트 성공! IP: {response.json().get('origin', response.text[:50])}")
+                    return True
+            except Exception as e2:
+                logger.warning(f"대체 테스트 실패 ({site}): {str(e2)}")
+                continue
+        
+        logger.error("모든 Tor 테스트 실패")
+        return False
 
 # 애플리케이션 시작 시 초기화
 try:
