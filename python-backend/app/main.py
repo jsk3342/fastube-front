@@ -3,11 +3,13 @@ YouTube 자막 추출 API 서버 메인 모듈
 """
 import logging
 from typing import Dict, Any, Optional, List
-from fastapi import FastAPI, HTTPException, Body, Query, Path, Depends
+from fastapi import FastAPI, HTTPException, Body, Query, Path, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, HttpUrl
+from fastapi.encoders import jsonable_encoder
 
 from .services.subtitle_service import SubtitleService
 
@@ -297,18 +299,18 @@ async def get_subtitles(
         video_id = subtitle_service.extract_video_id(request.url)
         if not video_id:
             logger.error(f"잘못된 YouTube URL: {request.url}")
-            return {
-                "success": False,
-                "message": "Invalid YouTube URL"
-            }
+            return SubtitleResponse(
+                success=False,
+                message="Invalid YouTube URL"
+            )
         
         # 비동기 서비스 메서드 호출로 자막 추출
-        success, result = await subtitle_service.get_subtitles_with_ytdlp(video_id, request.language)
+        success, subtitle_data = await subtitle_service.get_subtitles_with_ytdlp(video_id, request.language)
         
         if not success:
             # 첫 번째 방법 실패, 파일 기반 방식 시도
             logger.warning(f"yt-dlp 방식 실패, 파일 기반 방식 시도: {video_id}")
-            success, result = await subtitle_service.get_subtitles_with_file(video_id, request.language)
+            success, subtitle_data = await subtitle_service.get_subtitles_with_file(video_id, request.language)
         
         if not success:
             # 모든 방법 실패
@@ -320,10 +322,22 @@ async def get_subtitles(
         
         # 성공 결과 반환
         logger.info(f"자막 추출 성공: {video_id}")
-        return {
-            "success": True,
-            "data": result
-        }
+        
+        # 모든 필수 필드가 있는지 확인
+        if 'text' not in subtitle_data:
+            subtitle_data['text'] = ""
+        if 'subtitles' not in subtitle_data:
+            subtitle_data['subtitles'] = []
+        if 'videoInfo' not in subtitle_data:
+            # 비디오 정보 가져오기
+            video_info = await subtitle_service.get_video_info(video_id)
+            subtitle_data['videoInfo'] = video_info
+        
+        # SubtitleResponse 객체 반환
+        return SubtitleResponse(
+            success=True,
+            data=SubtitleData(**subtitle_data)
+        )
         
     except HTTPException as e:
         # 이미 처리된 HTTP 예외는 그대로 전파
@@ -391,10 +405,10 @@ async def get_video_info(
         
         # 응답 구성 및 반환
         logger.info(f"비디오 정보 반환: {id}")
-        return {
-            "success": True,
-            "data": video_info
-        }
+        return VideoInfoResponse(
+            success=True,
+            data=video_info
+        )
         
     except HTTPException as e:
         # 이미 처리된 HTTP 예외는 그대로 전파
@@ -406,6 +420,44 @@ async def get_video_info(
             status_code=500,
             detail=f"Error getting video information: {str(e)}"
         )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """
+    HTTP 예외 처리기
+    """
+    status_code = exc.status_code
+    detail = exc.detail
+    
+    # 오류 응답 생성
+    error_response = ErrorResponse(
+        success=False,
+        message=str(detail)
+    )
+    
+    return JSONResponse(
+        status_code=status_code,
+        content=jsonable_encoder(error_response)
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    """
+    일반 예외 처리기
+    """
+    # 오류 로깅
+    logger.error(f"처리되지 않은 예외 발생: {str(exc)}", exc_info=True)
+    
+    # 오류 응답 생성
+    error_response = ErrorResponse(
+        success=False,
+        message=f"Internal server error: {str(exc)}"
+    )
+    
+    return JSONResponse(
+        status_code=500,
+        content=jsonable_encoder(error_response)
+    )
 
 if __name__ == "__main__":
     import uvicorn

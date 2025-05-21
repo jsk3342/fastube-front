@@ -121,31 +121,42 @@ class SubtitleService:
         """
         yt-dlp API를 사용하여 자막을 추출합니다.
         """
-        logger.info(f"yt-dlp API 방식으로 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
-        
         try:
+            self.logger.info(f"yt-dlp API 방식으로 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
+            
             # 비동기 함수를 호출
             success, result = await get_subtitles(video_id, language)
             
-            if success:
-                # 비디오 정보에 videoId 추가
-                if 'data' in result and 'videoInfo' in result['data']:
-                    result['data']['videoInfo']['videoId'] = video_id
-                    
-                # subtitles 필드 추가 (Node.js API와 호환성을 위해)
-                if 'data' in result:
-                    if 'subtitles' not in result['data']:
-                        result['data']['subtitles'] = []
-                    
-                logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
-            else:
-                logger.warning(f"yt-dlp API 방식으로 자막 추출 실패: {video_id}")
+            if success and 'data' in result:
+                # 응답 형식 확인 및 수정
+                if 'videoInfo' not in result['data']:
+                    # 비디오 정보 가져오기
+                    video_info = await self.get_video_info(video_id)
+                    result['data']['videoInfo'] = video_info
                 
-            return success, result
+                # videoId 필드 확인
+                if 'videoId' not in result['data']['videoInfo']:
+                    result['data']['videoInfo']['videoId'] = video_id
+                
+                # 필수 필드 text 확인
+                if 'text' not in result['data']:
+                    result['data']['text'] = ""
+                
+                # subtitles 필드 추가 (Node.js API와 호환성을 위해)
+                if 'subtitles' not in result['data']:
+                    result['data']['subtitles'] = []
+                
+                self.logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
+                return success, result['data']
+            else:
+                # 오류인 경우
+                self.logger.warning(f"yt-dlp API 방식으로 자막 추출 실패: {video_id}")
+                return False, {
+                    "message": result.get('message', 'Subtitle extraction failed')
+                }
         except Exception as e:
-            logger.error(f"yt-dlp API 사용 중 예외 발생: {str(e)}")
+            self.logger.error(f"yt-dlp API 사용 중 예외 발생: {str(e)}")
             return False, {
-                "success": False, 
                 "message": f"Error during subtitle extraction: {str(e)}"
             }
     
@@ -158,7 +169,7 @@ class SubtitleService:
             self.logger.info(f"파일 기반 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
             
             # 비디오 정보 가져오기
-            video_info = self.get_video_info(video_id)
+            video_info = await self.get_video_info(video_id)
             if not video_info:
                 return False, {'message': 'Failed to get video info'}
             
