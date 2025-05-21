@@ -15,23 +15,13 @@ class SubtitleItem(TypedDict):
     end: Optional[float]  # 종료 시간 (초)
 
 def format_time(seconds: float) -> str:
-    """
-    초 단위를 "00:00" 형식으로 변환합니다.
-    
-    Args:
-        seconds: 변환할 초 단위 시간
-        
-    Returns:
-        "00:00" 형식의 시간 문자열
-    """
-    # 정수로 변환하여 소수점 제거 (안전하게 먼저 float으로 변환 후 int로 변환)
+    """초 단위를 "00:00" 형식으로 변환합니다."""
     try:
-        total_seconds = int(float(seconds))
-        mins = total_seconds // 60
-        secs = total_seconds % 60
+        total_seconds = float(seconds)
+        mins = int(total_seconds // 60)
+        secs = int(total_seconds % 60)
         return f"{mins:02d}:{secs:02d}"
     except (ValueError, TypeError):
-        # 변환 오류 시 기본값 반환
         return "00:00"
 
 def decode_html_entities(text: str) -> str:
@@ -48,34 +38,23 @@ def decode_html_entities(text: str) -> str:
         return html.unescape(text)
     except Exception:
         return text
-
-def enhance_subtitle_items(subtitles: List[SubtitleItem]) -> List[SubtitleItem]:
-    """
-    SubtitleItem 배열에 추가 정보를 계산하여 확장된 배열을 반환합니다.
     
-    Args:
-        subtitles: 원본 자막 항목 리스트
-        
-    Returns:
-        확장된 자막 항목 리스트
-    """
+def enhance_subtitle_items(subtitles: List[SubtitleItem]) -> List[SubtitleItem]:
+    """SubtitleItem 배열에 추가 정보를 계산하여 확장된 배열을 반환합니다."""
     result = []
     
     for item in subtitles:
         start = float(item["start"])
         dur = float(item["dur"])
         
-        # 텍스트 디코딩 및 추가 정보 계산
+        # 항상 새로 계산하여 Node.js와 일치시킴
         enhanced_item = {
             **item,
             "text": decode_html_entities(item["text"]),
+            "startFormatted": format_time(start),
             "end": start + dur,
-            "duration": item["dur"]  # duration 필드 추가 (dur과 같은 값)
+            "duration": item["dur"]  # 추가 필드 유지 (Node.js 버전에 없음)
         }
-        
-        # startFormatted가 없을 경우에만 추가
-        if "startFormatted" not in item:
-            enhanced_item["startFormatted"] = format_time(start)
         
         result.append(enhanced_item)
     
@@ -174,7 +153,8 @@ def extract_subtitle_items_from_json(json_data: Dict[str, Any]) -> List[Subtitle
 def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List[SubtitleItem]:
     """
     YouTube Transcript API 형식의 자막 데이터를 SubtitleItem 형식으로 변환합니다.
-    프론트엔드에서 요구하는 필드를 모두 포함합니다.
+    프론트엔드에서 요구하는 필드를 모두 포함하며, 각 자막 항목의 startFormatted 시간을
+    실제 시작 시간을 기반으로 정확하게 계산합니다.
     
     Args:
         transcript_data: YouTube Transcript API에서 반환된 자막 데이터
@@ -184,25 +164,34 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
     """
     subtitle_items = []
     
-    for item in transcript_data:
-        # 시작 시간과 지속 시간 추출
-        start = item.get("start", 0)
-        dur = item.get("duration", 2)  # 기본 지속 시간 2초
+    # 자막 데이터 정렬 (시간순)
+    sorted_transcript = sorted(transcript_data, key=lambda item: float(item.get('start', 0)))
+    
+    for item in sorted_transcript:
+        # 시작 시간과 지속 시간 추출 (크롤링한 실제 데이터 사용)
+        start = float(item.get("start", 0))
+        dur = float(item.get("duration", 2))  # 기본 지속 시간 2초
         
-        # 시간을 "00:00" 형식으로 포맷팅 (항상 수행)
-        start_formatted = format_time(start)
+        # 시간을 "00:00" 형식으로 정확히 포맷팅
+        minutes = int(start // 60)
+        seconds = int(start % 60)
+        start_formatted = f"{minutes:02d}:{seconds:02d}"
         
-        # 텍스트 내 HTML 엔티티 디코딩
-        text = decode_html_entities(item.get("text", ""))
+        # 텍스트 내 HTML 엔티티 디코딩 및 정리
+        text = decode_html_entities(item.get("text", "")).strip()
         
-        # SubtitleItem 생성 (프론트엔드와 동일한 형식)
+        # 빈 텍스트는 건너뛰기
+        if not text:
+            continue
+        
+        # SubtitleItem 생성
         subtitle_item = {
             "text": text,
             "start": str(start),
             "dur": str(dur),
             "duration": str(dur),  # duration 필드 추가 (dur과 동일한 값)
-            "startFormatted": start_formatted,  # startFormatted 필드 필수 추가
-            "end": start + dur  # 종료 시간 계산하여 추가
+            "startFormatted": start_formatted,  # 정확한 시간 기반 포맷팅
+            "end": start + dur  # 종료 시간 계산
         }
         
         subtitle_items.append(subtitle_item)

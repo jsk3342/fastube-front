@@ -530,7 +530,7 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
     지정된 언어로 YouTube 비디오의 자막을 가져옵니다.
     성능 향상을 위해 우선적으로 YouTube Transcript API를 사용하고,
     실패하면 Tor 네트워크를 통한 yt-dlp 방식을 시도합니다.
-    이미 응답을 반환한 경우 추가 시도를 하지 않습니다.
+    API 응답에는 subtitles와 videoInfo가 항상 포함됩니다.
     """
     global last_request_time
     response_sent = False
@@ -591,24 +591,30 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
                 
                 # 자막 데이터가 있는 경우 서브타이틀 처리
                 if 'data' in result and 'text' in result['data']:
-                    # 서브타이틀 처리: 자막 형식에 따라 적절히 처리
-                    subtitle_text = result['data']['text']
-                    format_type = "text"
-                    
-                    # 형식 검사
-                    if subtitle_text.startswith('<?xml'):
-                        format_type = "xml"
-                    elif subtitle_text.startswith('{'):
-                        format_type = "json"
+                    # 자막 항목이 이미 있는 경우 (convert_transcript_api_format에서 생성)
+                    if 'subtitles' in result['data'] and result['data']['subtitles']:
+                        # 이미 처리된 자막이 있으면 그대로 사용 (시작 시간이 이미 올바르게 설정됨)
+                        logger.info("기존 자막 항목 사용 (시작 시간 정보 유지)")
+                    else:
+                        # 서브타이틀 처리: 자막 형식에 따라 적절히 처리
+                        subtitle_text = result['data']['text']
+                        format_type = "text"
                         
-                    # 서브타이틀 처리 및 반환
-                    subtitle_data = process_subtitles(subtitle_text, format_type)
-                    
-                    # 기존 응답에 서브타이틀 데이터 추가
-                    result['data']['subtitles'] = subtitle_data['subtitles']
+                        # 형식 검사
+                        if subtitle_text.startswith('<?xml'):
+                            format_type = "xml"
+                        elif subtitle_text.startswith('{'):
+                            format_type = "json"
+                            
+                        # 서브타이틀 처리 및 반환
+                        subtitle_data = process_subtitles(subtitle_text, format_type)
+                        
+                        # 기존 응답에 서브타이틀 데이터 추가
+                        result['data']['subtitles'] = subtitle_data['subtitles']
                     
                     # videoInfo 객체가 응답에 포함되어 있지 않은 경우 추가
                     if 'videoInfo' not in result['data'] or not result['data']['videoInfo']:
+                        logger.info("videoInfo 누락됨, 데이터 추가")
                         result['data']['videoInfo'] = video_info
                 
                 return success, result
@@ -1549,8 +1555,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         subtitle_lines.append(text)
                 
                 # 프론트엔드 형식에 맞게 응답 구성
-                subtitle_text = '\n'.join(subtitle_lines)
-                full_text = ' '.join(subtitle_lines)  # 프론트엔드용 전체 텍스트 (공백으로 연결)
+                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
                 subtitles = convert_transcript_api_format(transcript_data)
                 
                 # 자막이 성공적으로 추출된 경우
@@ -1565,8 +1570,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     return True, {
                         'success': True,
                         'data': {
-                            'text': subtitle_text,
-                            'fullText': full_text,  # 프론트엔드용 전체 텍스트 (공백으로 연결)
+                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
                             'subtitles': subtitles,
                             'videoInfo': {
                                 'title': video_info.get('title', 'Unknown'),
@@ -1592,8 +1596,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     if text:
                         subtitle_lines.append(text)
                 
-                subtitle_text = '\n'.join(subtitle_lines)
-                full_text = ' '.join(subtitle_lines)  # 프론트엔드 요구사항에 맞는 형식
+                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
                 subtitles = convert_transcript_api_format(transcript_data)
                 
                 if subtitle_text:
@@ -1603,8 +1606,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     return True, {
                         'success': True,
                         'data': {
-                            'text': subtitle_text,
-                            'fullText': full_text,  # 프론트엔드용 전체 텍스트 (공백으로 연결)
+                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
                             'subtitles': subtitles,
                             'videoInfo': {
                                 'title': video_info.get('title', 'Unknown'),
@@ -1652,7 +1654,8 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
 def get_video_info_minimal(video_id: str) -> dict:
     """
     가벼운 버전의 비디오 정보 가져오기 함수입니다.
-    메타데이터만 가져와서 빠르게 처리합니다.
+    실제 비디오 정보를 비동기적으로 가져와 반환합니다.
+    SSL 검증 우회와 추가 검색 방법으로 성공률을 높입니다.
     """
     logger.info(f"비디오 정보 가져오기 시작: {video_id}")
     video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -1667,13 +1670,16 @@ def get_video_info_minimal(video_id: str) -> dict:
     except Exception as e:
         logger.warning(f"쿠키 파일 준비 실패 (무시): {str(e)}")
     
-    # yt-dlp 옵션 설정 (간소화)
+    # yt-dlp 옵션 설정 (간소화 및 SSL 검증 우회)
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': True,
         'skip_download': True,
         'nocheckcertificate': True,  # SSL 인증서 검증 비활성화
+        'format': 'best[height<=480]',  # 저화질로 제한하여 속도 개선
+        'socket_timeout': 3,  # 타임아웃 감소
+        'retries': 2,  # 재시도 횟수
     }
     
     # Tor 네트워크 사용 (설정된 경우)
@@ -1686,21 +1692,21 @@ def get_video_info_minimal(video_id: str) -> dict:
     
     # 기본 반환값 설정
     result = {
-        'title': "Unknown",
+        'title': f"Video {video_id}",  # 기본값에서 변경
         'channelName': "Unknown",
         'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
         'videoId': video_id
     }
     
-    # 3번 시도
-    for attempt in range(3):
+    # 1. yt-dlp로 시도 (2번 시도)
+    for attempt in range(2):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(video_url, download=False)
                 
                 if info:
                     # 기본 정보 가져오기
-                    result['title'] = info.get('title', "Unknown")
+                    result['title'] = info.get('title', f"Video {video_id}")
                     result['channelName'] = info.get('uploader', "Unknown")
                     
                     # 썸네일 URL 가져오기
@@ -1713,27 +1719,31 @@ def get_video_info_minimal(video_id: str) -> dict:
                         if thumbnails:
                             result['thumbnailUrl'] = thumbnails[0].get('url', result['thumbnailUrl'])
                     
+                    # 성공하면 즉시 반환
+                    logger.info(f"yt-dlp로 비디오 정보 가져오기 성공: {result['title']}")
                     return result
             
-            # 성공적으로 정보를 가져왔으면 루프 종료
-            break
-            
         except Exception as e:
-            logger.warning(f"시도 {attempt+1}/3 실패: {str(e)}")
-            # 마지막 시도가 아니면 잠시 대기
-            if attempt < 2:
+            logger.warning(f"yt-dlp 시도 {attempt+1}/2 실패: {str(e)}")
+            if attempt < 1:
                 time.sleep(1)
     
-    # 웹 페이지에서 직접 정보 추출 시도 (yt-dlp 실패 시)
+    # 2. 웹 스크래핑으로 시도 (메타태그)
     try:
+        # SSL 검증 경고 무시
+        requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+        
+        # 랜덤 헤더 사용 및 SSL 검증 우회
         headers = get_random_headers()
-        response = requests.get(video_url, headers=headers, timeout=5, verify=False)
+        headers['User-Agent'] = get_random_browser_fingerprint()
+        
+        response = requests.get(video_url, headers=headers, timeout=3, verify=False)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 메타 태그에서 정보 추출
+            # 1. 메타 태그에서 정보 추출
             title_tag = soup.find('meta', property='og:title')
-            channel_tag = soup.find('meta', property='og:video:tag')
+            channel_tag = soup.find('meta', property='og:video:tag') or soup.find('meta', itemprop='channelName')
             thumbnail_tag = soup.find('meta', property='og:image')
             
             if title_tag and title_tag.get('content'):
