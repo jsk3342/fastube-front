@@ -2,7 +2,8 @@ import axios from "axios";
 
 // 환경 변수에서 API 기본 URL 가져오기
 const apiBaseUrl =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000/api";
+  import.meta.env.VITE_API_BASE_URL ||
+  "https://fastube-front-production.up.railway.app/api";
 
 // API base URL을 /api로 설정하여 모든 요청에 /api 프리픽스가 자동으로 추가되도록 함
 export const api = axios.create({

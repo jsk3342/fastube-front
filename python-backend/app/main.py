@@ -82,7 +82,7 @@ app = FastAPI(
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 모든 도메인 허용 (프로덕션에서는 특정 도메인으로 제한해야 함)
+    allow_origins=["https://fastube.vercel.app", "http://localhost:3000", "http://localhost:5173"],  # 프론트엔드 도메인 허용
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
