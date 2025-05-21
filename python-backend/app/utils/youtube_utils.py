@@ -627,6 +627,10 @@ async def get_subtitles(video_id: str, language: str, max_retries=1, use_auth=Fa
                     
                     # 기존 응답에 서브타이틀 데이터 추가
                     result['data']['subtitles'] = subtitle_data['subtitles']
+                    
+                    # videoInfo 객체가 응답에 포함되어 있지 않은 경우 추가
+                    if 'videoInfo' not in result['data'] or not result['data']['videoInfo']:
+                        result['data']['videoInfo'] = video_info
                 
                 return success, result
             else:
@@ -1503,6 +1507,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
     """
     YouTube Transcript API를 사용하여 자막을 추출합니다.
     성능 최적화를 위해 불필요한 작업을 줄이고 빠르게 자막을 추출합니다.
+    실제 비디오 정보를 반환 결과에 명시적으로 포함합니다.
     """
     logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
     
@@ -1564,12 +1569,23 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                 # 자막이 성공적으로 추출된 경우
                 if subtitle_text:
                     logger.info(f"자막 추출 성공: {len(subtitle_text)} 자")
+                    
+                    # 비디오 정보가 기본값인 경우 로그 출력
+                    if video_info.get('title') == 'Unknown' or video_info.get('channelName') == 'Unknown':
+                        logger.warning(f"비디오 정보가 기본값입니다: {video_info}")
+                    
+                    # 실제 비디오 정보를 반환 결과에 포함
                     return True, {
                         'success': True,
                         'data': {
                             'text': subtitle_text,
                             'subtitles': subtitles,
-                            'videoInfo': video_info
+                            'videoInfo': {
+                                'title': video_info.get('title', 'Unknown'),
+                                'channelName': video_info.get('channelName', 'Unknown'),
+                                'thumbnailUrl': video_info.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                                'videoId': video_id
+                            }
                         }
                     }
             except Exception as e:
@@ -1593,12 +1609,19 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                 
                 if subtitle_text:
                     logger.info(f"직접 요청으로 자막 추출 성공: {len(subtitle_text)} 자")
+                    
+                    # 실제 비디오 정보를 반환 결과에 포함
                     return True, {
                         'success': True,
                         'data': {
                             'text': subtitle_text,
                             'subtitles': subtitles,
-                            'videoInfo': video_info
+                            'videoInfo': {
+                                'title': video_info.get('title', 'Unknown'),
+                                'channelName': video_info.get('channelName', 'Unknown'),
+                                'thumbnailUrl': video_info.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                                'videoId': video_id
+                            }
                         }
                     }
             except Exception as e:

@@ -24,8 +24,10 @@ def format_time(seconds: float) -> str:
     Returns:
         "00:00" 형식의 시간 문자열
     """
-    mins = int(seconds // 60)
-    secs = int(seconds % 60)
+    # 정수로 변환하여 소수점 제거
+    total_seconds = int(seconds)
+    mins = total_seconds // 60
+    secs = total_seconds % 60
     return f"{mins:02d}:{secs:02d}"
 
 def decode_html_entities(text: str) -> str:
@@ -200,19 +202,27 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
     subtitle_items = []
     
     for item in transcript_data:
+        # 시작 시간과 지속 시간 추출
         start = item.get("start", 0)
-        dur = str(item.get("duration", 2))  # 기본 지속 시간 2초
+        dur = item.get("duration", 2)  # 기본 지속 시간 2초
         
         # 시간을 "00:00" 형식으로 포맷팅
-        start_formatted = format_time(float(start))
+        start_formatted = format_time(start)
         
-        subtitle_items.append({
+        # 텍스트 내 HTML 엔티티 디코딩
+        text = decode_html_entities(item.get("text", ""))
+        
+        # SubtitleItem 생성
+        subtitle_item = {
             "start": str(start),
-            "dur": dur,
-            "duration": dur,  # duration 필드 추가
-            "startFormatted": start_formatted,  # startFormatted 필드 추가
-            "text": item.get("text", "")
-        })
+            "dur": str(dur),
+            "duration": str(dur),  # duration 필드 추가 (dur과 동일한 값)
+            "startFormatted": start_formatted,  # startFormatted 필드 필수 추가
+            "text": text,
+            "end": start + dur  # 종료 시간 계산하여 추가
+        }
+        
+        subtitle_items.append(subtitle_item)
     
     return subtitle_items
 
