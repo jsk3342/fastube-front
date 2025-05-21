@@ -1492,6 +1492,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
     YouTube Transcript API를 사용하여 자막을 추출합니다.
     성능 최적화를 위해 불필요한 작업을 줄이고 빠르게 자막을 추출합니다.
     실제 비디오 정보를 반환 결과에 명시적으로 포함합니다.
+    프론트엔드 형식에 맞게 응답을 구성합니다.
     """
     logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
     
@@ -1547,7 +1548,9 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                     if text:
                         subtitle_lines.append(text)
                 
+                # 프론트엔드 형식에 맞게 응답 구성
                 subtitle_text = '\n'.join(subtitle_lines)
+                full_text = ' '.join(subtitle_lines)  # 프론트엔드용 전체 텍스트 (공백으로 연결)
                 subtitles = convert_transcript_api_format(transcript_data)
                 
                 # 자막이 성공적으로 추출된 경우
@@ -1563,6 +1566,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         'success': True,
                         'data': {
                             'text': subtitle_text,
+                            'fullText': full_text,  # 프론트엔드용 전체 텍스트 (공백으로 연결)
                             'subtitles': subtitles,
                             'videoInfo': {
                                 'title': video_info.get('title', 'Unknown'),
@@ -1589,6 +1593,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         subtitle_lines.append(text)
                 
                 subtitle_text = '\n'.join(subtitle_lines)
+                full_text = ' '.join(subtitle_lines)  # 프론트엔드 요구사항에 맞는 형식
                 subtitles = convert_transcript_api_format(transcript_data)
                 
                 if subtitle_text:
@@ -1599,6 +1604,7 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                         'success': True,
                         'data': {
                             'text': subtitle_text,
+                            'fullText': full_text,  # 프론트엔드용 전체 텍스트 (공백으로 연결)
                             'subtitles': subtitles,
                             'videoInfo': {
                                 'title': video_info.get('title', 'Unknown'),

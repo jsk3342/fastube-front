@@ -174,12 +174,13 @@ def extract_subtitle_items_from_json(json_data: Dict[str, Any]) -> List[Subtitle
 def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List[SubtitleItem]:
     """
     YouTube Transcript API 형식의 자막 데이터를 SubtitleItem 형식으로 변환합니다.
+    프론트엔드에서 요구하는 필드를 모두 포함합니다.
     
     Args:
         transcript_data: YouTube Transcript API에서 반환된 자막 데이터
         
     Returns:
-        SubtitleItem 목록
+        SubtitleItem 목록 (프론트엔드 호환)
     """
     subtitle_items = []
     
@@ -194,13 +195,13 @@ def convert_transcript_api_format(transcript_data: List[Dict[str, Any]]) -> List
         # 텍스트 내 HTML 엔티티 디코딩
         text = decode_html_entities(item.get("text", ""))
         
-        # SubtitleItem 생성
+        # SubtitleItem 생성 (프론트엔드와 동일한 형식)
         subtitle_item = {
+            "text": text,
             "start": str(start),
             "dur": str(dur),
             "duration": str(dur),  # duration 필드 추가 (dur과 동일한 값)
             "startFormatted": start_formatted,  # startFormatted 필드 필수 추가
-            "text": text,
             "end": start + dur  # 종료 시간 계산하여 추가
         }
         
