@@ -120,6 +120,7 @@ class SubtitleService:
     async def get_subtitles_with_ytdlp(self, video_id: str, language: str) -> Tuple[bool, Dict[str, Any]]:
         """
         yt-dlp API를 사용하여 자막을 추출합니다.
+        노드 서버와 동일한 응답 형식을 사용합니다.
         """
         try:
             self.logger.info(f"yt-dlp API 방식으로 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
@@ -127,27 +128,28 @@ class SubtitleService:
             # 비동기 함수를 호출
             success, result = await get_subtitles(video_id, language)
             
-            if success and 'data' in result:
-                # 응답 형식 확인 및 수정
-                if 'videoInfo' not in result['data']:
-                    # 비디오 정보 가져오기
-                    video_info = await self.get_video_info(video_id)
-                    result['data']['videoInfo'] = video_info
+            if success:
+                # 응답 데이터 추출
+                data = result.get('data', {}) if isinstance(result, dict) else {}
+                text = data.get('text', '')
                 
-                # videoId 필드 확인
-                if 'videoId' not in result['data']['videoInfo']:
-                    result['data']['videoInfo']['videoId'] = video_id
+                # 비디오 정보 가져오기
+                video_info = await self.get_video_info(video_id)
                 
-                # 필수 필드 text 확인
-                if 'text' not in result['data']:
-                    result['data']['text'] = ""
-                
-                # subtitles 필드 추가 (Node.js API와 호환성을 위해)
-                if 'subtitles' not in result['data']:
-                    result['data']['subtitles'] = []
+                # 최종 응답 형식 구성 (노드 서버와 동일한 형식)
+                response_data = {
+                    'text': text,
+                    'subtitles': [],  # 노드 서버는 빈 배열을 반환
+                    'videoInfo': {
+                        'title': video_info.get('title', f"Video {video_id}"),
+                        'channelName': video_info.get('channelName', 'Unknown Channel'),
+                        'thumbnailUrl': video_info.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                        'videoId': video_id
+                    }
+                }
                 
                 self.logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
-                return success, result['data']
+                return success, response_data
             else:
                 # 오류인 경우
                 self.logger.warning(f"yt-dlp API 방식으로 자막 추출 실패: {video_id}")
@@ -164,6 +166,7 @@ class SubtitleService:
         """
         파일 기반 방식으로 자막 추출을 시도합니다.
         마지막 대안으로 사용됩니다.
+        노드 서버와 동일한 응답 형식을 사용합니다.
         """
         try:
             self.logger.info(f"파일 기반 자막 추출 시도 - 비디오 ID: {video_id}, 언어: {language}")
@@ -182,18 +185,18 @@ class SubtitleService:
                 with open(subtitle_file, 'r', encoding='utf-8') as f:
                     subtitle_text = f.read()
                 
-                # 응답 데이터 구성
-                result = {
+                # 응답 데이터 구성 (노드 서버와 동일한 형식)
+                response_data = {
                     'text': subtitle_text,
-                    'subtitles': [],  # Node.js 백엔드와 호환성을 위해 빈 배열 포함
+                    'subtitles': [],  # 노드 서버는 빈 배열을 반환
                     'videoInfo': {
                         'title': video_info.get('title', f"Video {video_id}"),
                         'channelName': video_info.get('channelName', 'Unknown Channel'),
                         'thumbnailUrl': video_info.get('thumbnailUrl', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
-                        'videoId': video_id  # 비디오 ID 포함
+                        'videoId': video_id
                     }
                 }
-                return True, result
+                return True, response_data
             else:
                 self.logger.warning(f"자막 파일을 찾을 수 없음: {subtitle_file}")
                 return False, {'message': f"Subtitle file not found for video: {video_id}"}
