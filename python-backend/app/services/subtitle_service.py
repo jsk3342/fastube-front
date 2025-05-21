@@ -27,6 +27,12 @@ class SubtitleService:
     YouTube 자막 및 비디오 정보 처리 서비스
     """
     
+    def __init__(self):
+        """
+        SubtitleService 초기화
+        """
+        self.logger = logger  # 클래스 내부에서 사용할 로거 설정
+    
     async def get_video_info(self, video_id: str) -> Dict[str, Any]:
         """
         비디오 ID를 이용해 YouTube 비디오 정보를 가져옵니다.
