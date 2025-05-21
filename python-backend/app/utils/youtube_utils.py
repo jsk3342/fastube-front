@@ -154,21 +154,16 @@ def get_subtitles(video_id: str, language: str) -> Tuple[bool, Dict[str, Any]]:
             # 정보 추출 (자막 포함)
             info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
             
-            # 비디오 정보 가져오기
+            # 비디오 정보 가져오기 (Node.js 백엔드와 형식 통일)
             video_info = {
-                'title': info.get('title', ''),
-                'channelName': info.get('uploader', ''),
+                'title': info.get('title', f"Video {video_id}"),
+                'channelName': info.get('uploader', "Unknown Channel"),
                 'thumbnailUrl': info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
+                'videoId': video_id
             }
             
             # 자막 추출 시도
             subtitle_text = extract_subtitle_text(info, language)
-            
-            if not subtitle_text:
-                # 요청 언어로 없으면 영어 자막 시도
-                if language != 'en':
-                    logger.info(f"{language} 자막을 찾을 수 없어 영어 자막 시도 중")
-                    subtitle_text = extract_subtitle_text(info, 'en')
             
             if subtitle_text:
                 logger.info(f"자막 추출 성공: {len(subtitle_text)} 자")
@@ -176,6 +171,7 @@ def get_subtitles(video_id: str, language: str) -> Tuple[bool, Dict[str, Any]]:
                     'success': True,
                     'data': {
                         'text': subtitle_text,
+                        'subtitles': [],  # Node.js 백엔드와 호환성 위해 빈 배열 추가
                         'videoInfo': video_info
                     }
                 }
@@ -210,6 +206,14 @@ def extract_subtitle_text(info: Dict[str, Any], language: str) -> str:
         if language in info['automatic_captions']:
             logger.info(f"자동 생성 자막 발견 (언어: {language})")
             subtitle_text = process_subtitle_entries(info['automatic_captions'][language])
+    
+    # 발견한 자막이 없고 language가 'ko'인 경우 영어 자막 시도
+    if not subtitle_text and language == 'ko':
+        logger.info("한국어 자막 없음, 영어 자막 시도")
+        if 'subtitles' in info and info['subtitles'] and 'en' in info['subtitles']:
+            subtitle_text = process_subtitle_entries(info['subtitles']['en'])
+        elif 'automatic_captions' in info and info['automatic_captions'] and 'en' in info['automatic_captions']:
+            subtitle_text = process_subtitle_entries(info['automatic_captions']['en'])
     
     return subtitle_text
 

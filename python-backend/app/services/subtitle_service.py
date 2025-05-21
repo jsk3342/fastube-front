@@ -32,7 +32,26 @@ class SubtitleService:
         비디오 정보를 가져옵니다.
         """
         logger.info(f"비디오 정보 요청: {video_id}")
-        return get_video_info(video_id)
+        video_info = get_video_info(video_id)
+        
+        # Node.js 백엔드와 형식 통일
+        # videoId 필드를 별도로 추가
+        if 'videoId' not in video_info:
+            video_info['videoId'] = video_id
+        
+        # 언어 정보 형식 통일
+        if 'availableLanguages' in video_info and video_info['availableLanguages']:
+            # 이미 올바른 형식이면 유지
+            if not isinstance(video_info['availableLanguages'], list):
+                video_info['availableLanguages'] = []
+        else:
+            # 기본 언어 설정
+            video_info['availableLanguages'] = [
+                {"code": "ko", "name": "한국어"},
+                {"code": "en", "name": "영어"}
+            ]
+        
+        return video_info
     
     async def get_subtitles(self, url: str, language: str = "ko") -> Dict[str, Any]:
         """
@@ -79,9 +98,10 @@ class SubtitleService:
             if 'data' in result and 'videoInfo' in result['data']:
                 result['data']['videoInfo']['videoId'] = video_id
                 
-            # subtitles 필드 추가 (호환성을 위해)
+            # subtitles 필드 추가 (Node.js API와 호환성을 위해)
             if 'data' in result:
-                result['data']['subtitles'] = []
+                if 'subtitles' not in result['data']:
+                    result['data']['subtitles'] = []
                 
             logger.info(f"yt-dlp API 방식으로 자막 추출 성공: {video_id}")
         else:
@@ -153,12 +173,15 @@ class SubtitleService:
                 # 비디오 정보 가져오기
                 video_info = await self.get_video_info(video_id)
                 
+                # 자막 항목 생성 시도 (Node.js 백엔드와 형식 통일을 위해)
+                subtitles = []
+                
                 logger.info(f"파일 기반 방식으로 자막 추출 성공: {video_id}")
                 return True, {
                     "success": True,
                     "data": {
                         "text": subtitle_text,
-                        "subtitles": [],  # 호환성을 위해 빈 배열 추가
+                        "subtitles": subtitles,  # Node.js 백엔드와 호환성을 위해
                         "videoInfo": {
                             "title": video_info.get("title", ""),
                             "channelName": video_info.get("channelName", ""),
