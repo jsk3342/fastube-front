@@ -137,6 +137,51 @@ interface SubtitleResponse {
   };
 }
 
+/**
+ * YouTube HTML 응답에서 봇 감지 여부를 확인하는 함수
+ */
+function checkForBotDetection(html: string): {
+  detected: boolean;
+  reason: string;
+} {
+  // 봇 감지 키워드 및 패턴 확인
+  const botDetectionPatterns = [
+    {
+      pattern: /suspicious activity|unusual traffic|robot|captcha/i,
+      reason: "의심스러운 활동 경고 문구",
+    },
+    {
+      pattern: /https:\/\/www\.google\.com\/recaptcha\/api\.js/i,
+      reason: "reCAPTCHA 스크립트 발견",
+    },
+    {
+      pattern: /cf-browser-verification|cloudflare|challenge/i,
+      reason: "Cloudflare 보안 검사",
+    },
+    { pattern: /sitekey/i, reason: "CAPTCHA 사이트키 발견" },
+    { pattern: /id="captcha|class="captcha/i, reason: "CAPTCHA 요소 발견" },
+    { pattern: /consent\.youtube\.com/i, reason: "동의 페이지 리디렉션" },
+    { pattern: /sorry/i, reason: "Google 사과 페이지" },
+  ];
+
+  for (const { pattern, reason } of botDetectionPatterns) {
+    if (pattern.test(html)) {
+      return { detected: true, reason };
+    }
+  }
+
+  // 정상적인 YouTube 비디오 페이지 콘텐츠가 있는지 확인
+  const hasVideoPlayer =
+    html.includes('id="player"') || html.includes('id="movie_player"');
+  const hasTitleElement = html.includes("<title>") && html.includes("</title>");
+
+  if (!hasVideoPlayer && !hasTitleElement) {
+    return { detected: true, reason: "비디오 플레이어와 제목 요소 없음" };
+  }
+
+  return { detected: false, reason: "봇 감지 없음" };
+}
+
 export async function getSubtitlesDirectly(
   videoId: string,
   language: string = "ko"
@@ -147,16 +192,31 @@ export async function getSubtitlesDirectly(
     // 1. 자막 목록 가져오기
     console.log("[1단계] 자막 목록 요청 중...");
     console.log(`[요청 URL] https://www.youtube.com/watch?v=${videoId}`);
-    console.log(
-      `[요청 헤더] User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36`
-    );
+
+    // 더 실제 브라우저와 유사한 User-Agent 사용
+    const userAgent =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+    console.log(`[요청 헤더] User-Agent: ${userAgent}`);
 
     const response = await axios.get(
       `https://www.youtube.com/watch?v=${videoId}`,
       {
         headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+          "User-Agent": userAgent,
+          "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+          Accept:
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+          "Cache-Control": "max-age=0",
+          "Sec-Ch-Ua":
+            '"Chromium";v="122", "Google Chrome";v="122", "Not(A:Brand";v="24"',
+          "Sec-Ch-Ua-Mobile": "?0",
+          "Sec-Ch-Ua-Platform": '"macOS"',
+          "Sec-Fetch-Dest": "document",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "none",
+          "Sec-Fetch-User": "?1",
+          "Upgrade-Insecure-Requests": "1",
         },
       }
     );
@@ -165,21 +225,22 @@ export async function getSubtitlesDirectly(
     console.log(`[응답 헤더] ${JSON.stringify(response.headers)}`);
     console.log(`[응답 데이터 크기] ${response.data?.length || 0} 바이트`);
 
-    // HTML 전체를 별도 파일로 저장하고 로그 출력
+    // HTML 전체를 로깅하지 않음
     const html = response.data;
-    console.log(
-      "[전체 HTML] 시작 ============================================="
-    );
-    console.log(html);
-    console.log(
-      "[전체 HTML] 끝 ==============================================="
-    );
 
-    // HTML 전체를 로깅하면 너무 많으니 일부만 로깅
+    const botDetectionCheck = checkForBotDetection(html);
+    console.log(`[봇 감지 확인 결과] ${JSON.stringify(botDetectionCheck)}`);
+
+    if (botDetectionCheck.detected) {
+      console.error("[오류] 봇 감지 발생: ", botDetectionCheck.reason);
+      throw new Error(`Bot detection triggered: ${botDetectionCheck.reason}`);
+    }
+
+    // HTML 전체를 로깅하지 않고 일부만 로깅
     const htmlPreview =
-      response.data.substring(0, 500) +
+      response.data.substring(0, 200) +
       "... (중략) ..." +
-      response.data.substring(response.data.length - 500);
+      response.data.substring(response.data.length - 200);
     console.log(`[응답 HTML 미리보기] ${htmlPreview}`);
 
     // 2. HTML 파싱 및 자막 데이터 검색
