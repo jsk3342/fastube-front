@@ -1,6 +1,10 @@
 """
 YouTube 자막 추출 API 서버 메인 모듈
 """
+# python-backend/app/main.py 파일 최상단에 추가
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import logging
 from typing import Dict, Any, Optional, List
 from fastapi import FastAPI, HTTPException, Body, Query, Path, Depends, Request
