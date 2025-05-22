@@ -1575,470 +1575,70 @@ def get_random_browser_fingerprint():
 def extract_subtitles_with_transcript_api(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
     """
     YouTube Transcript API를 사용하여 자막을 추출합니다.
-    성능 최적화를 위해 불필요한 작업을 줄이고 빠르게 자막을 추출합니다.
-    실제 비디오 정보를 반환 결과에 명시적으로 포함합니다.
-    프론트엔드 형식에 맞게 응답을 구성합니다.
+    IP 변경 전략을 사용하여 봇 감지를 우회합니다.
     """
     logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
     
-    try:
-        # 비디오 정보를 먼저 한번 시도 (YouTube Transcript API는 비디오 정보를 제공하지 않음)
-        # 기존 video_info가 기본값인 경우에만 시도
-        need_video_info = video_info.get('title') == 'Unknown' or video_info.get('channelName') == 'Unknown'
-        
-        if need_video_info:
-            try:
-                # 비디오 정보 업데이트 시도
-                updated_info = extract_minimal_video_info_from_html(video_id)
-                if updated_info:
-                    # 기존 video_info에 없는 정보만 업데이트
-                    for key, value in updated_info.items():
-                        if key in ['title', 'channel_name', 'thumbnail_url']:
-                            target_key = key
-                            if key == 'channel_name':
-                                target_key = 'channelName'
-                            elif key == 'thumbnail_url':
-                                target_key = 'thumbnailUrl'
-                                
-                            # 기존 값이 Unknown일 때만 업데이트
-                            if target_key in video_info and video_info[target_key] == 'Unknown':
-                                video_info[target_key] = value
-                                
-                logger.info(f"HTML에서 비디오 정보 추출 성공: {video_info}")
-            except Exception as e:
-                logger.warning(f"HTML에서 비디오 정보 추출 실패: {str(e)}")
-        
-        # 자막 변환을 위한 언어 코드 매핑 (최적화: 일반적인 언어 코드만 포함)
-        lang_code_map = {
-            'ko': ['ko', 'ko-KR'],
-            'en': ['en', 'en-US'],
-            'ja': ['ja', 'ja-JP'],
-            'zh': ['zh', 'zh-CN', 'zh-TW'],
-            'es': ['es', 'es-ES'],
-            'fr': ['fr', 'fr-FR'],
-            'de': ['de', 'de-DE'],
-            'ru': ['ru', 'ru-RU'],
-            'pt': ['pt', 'pt-BR', 'pt-PT'],
-            'it': ['it', 'it-IT']
-        }
-        
-        # 요청 언어에 대한 코드를 최대 1개만 사용 (최적화)
-        target_langs = lang_code_map.get(language, [language])
-        if len(target_langs) > 1:
-            target_langs = [target_langs[0]]  # 첫 번째 언어 코드만 사용 (시간 단축)
-        
-        logger.info(f"요청 언어 {language}에 대해 시도할 언어 코드: {target_langs[0]}")
-            
-        # 사용 가능한 자막 목록 가져오기
-        available_langs = []
-        transcript = None
-        
+    # 최대 3번 시도 (IP 변경 전략)
+    max_attempts = 3
+    
+    for attempt in range(max_attempts):
         try:
-            # 단일 요청으로 처리
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            
-            # 디버그 모드가 아닌 경우 간단히 처리 (최적화)
-            if logger.level <= logging.DEBUG:
-                # 디버그 모드일 경우만 전체 목록 로깅
-                for transcript_item in transcript_list:
-                    available_langs.append(transcript_item.language_code)
+            # IP 변경 시도 (두 번째 시도부터)
+            if attempt > 0:
+                try:
+                    # 랜덤 지연 (봇 감지 회피)
+                    wait_time = random.uniform(1.5, 3.0)
+                    logger.info(f"IP 변경 전 {wait_time:.1f}초 대기...")
+                    time.sleep(wait_time)
                     
-                    # 원하는 언어와 일치하는지 확인 (첫 번째 일치하는 것 사용)
-                    if transcript_item.language_code in target_langs:
-                        transcript = transcript_item
-                        logger.debug(f"자막 발견: {transcript_item.language_code}")
-                        break
-                
-                if available_langs:
-                    logger.debug(f"사용 가능한 자막: {available_langs}")
-            else:
-                # 디버그 모드가 아닐 경우 바로 원하는 언어만 찾기
-                for transcript_item in transcript_list:
-                    # 모든 언어를 순회하지 않고 원하는 언어만 확인
-                    if transcript_item.language_code in target_langs:
-                        transcript = transcript_item
-                        available_langs.append(transcript_item.language_code)
-                        logger.info(f"자막 발견: {transcript_item.language_code}")
-                        break
-        except Exception as e:
-            logger.warning(f"트랜스크립트 목록 가져오기 실패: {str(e)}")
-        
-        # 자막 발견된 경우 처리
-        if transcript:
-            try:
-                # 자막 데이터 가져오기
-                transcript_data = transcript.fetch()
-                
-                # 자막 텍스트 및 서브타이틀 항목 생성
-                subtitle_lines = []
-                for item in transcript_data:
-                    text = item.get('text', '').strip()
-                    if text:
-                        subtitle_lines.append(text)
-                
-                # 프론트엔드 형식에 맞게 응답 구성
-                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
-                subtitles = convert_transcript_api_format(transcript_data)
-                
-                # 자막이 성공적으로 추출된 경우
-                if subtitle_text:
-                    logger.info(f"자막 추출 성공: {len(subtitle_text)} 자")
-                    
-                    # 여전히 비디오 정보가 기본값인 경우, 마지막 시도
-                    if video_info.get('title') == 'Unknown':
-                        # 자막 데이터에서 추가 정보 유추 시도
-                        video_info['title'] = f"YouTube Video {video_id}"
-                        
-                        # 영상 첫 부분 자막으로 제목 유추 (옵션)
-                        try:
-                            first_subtitles = ' '.join([item['text'] for item in transcript_data[:3] if 'text' in item])
-                            if len(first_subtitles) > 10 and len(first_subtitles) < 100:
-                                video_info['title'] = first_subtitles
-                        except:
-                            pass
-                    
-                    # 최종 비디오 정보 로그
-                    logger.info(f"최종 비디오 정보: {video_info}")
-                    
-                    # 실제 비디오 정보를 반환 결과에 포함
-                    return True, {
-                        'success': True,
-                        'data': {
-                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
-                            'subtitles': subtitles,
-                            'videoInfo': video_info
-                        }
-                    }
-            except Exception as e:
-                logger.error(f"자막 데이터 처리 중 오류: {str(e)}")
-        
-        # 직접 특정 언어 요청으로 시도 (최대 효율화를 위해 단 한 번만 시도)
-        if not transcript and target_langs:
-            try:
-                lang_to_try = target_langs[0]  # 첫 번째 언어 코드만 시도
-                logger.info(f"직접 요청으로 자막 시도: {lang_to_try}")
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_to_try])
-                
-                # 자막 텍스트 및 서브타이틀 항목 생성
-                subtitle_lines = []
-                for item in transcript_data:
-                    text = item.get('text', '').strip()
-                    if text:
-                        subtitle_lines.append(text)
-                
-                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
-                subtitles = convert_transcript_api_format(transcript_data)
-                
-                if subtitle_text:
-                    logger.info(f"직접 요청으로 자막 추출 성공: {len(subtitle_text)} 자")
-                    
-                    # 최종 비디오 정보 로그
-                    logger.info(f"최종 비디오 정보: {video_info}")
-                    
-                    # 실제 비디오 정보를 반환 결과에 포함
-                    return True, {
-                        'success': True,
-                        'data': {
-                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
-                            'subtitles': subtitles,
-                            'videoInfo': video_info
-                        }
-                    }
-            except Exception as e:
-                logger.warning(f"직접 자막 요청({lang_to_try}) 실패: {str(e)}")
-        
-        # 요청한 언어의 자막을 찾지 못한 경우
-        if available_langs:
-            available_str = ", ".join(available_langs)
-            return False, {
-                'success': False,
-                'message': f"요청한 언어({language})의 자막을 찾을 수 없습니다.",
-                'availableLanguages': available_langs
-            }
-        else:
-            # 사용 가능한 자막이 없는 경우
-            return False, {
-                'success': False,
-                'message': f"이 비디오에는 자막이 없습니다: {video_id}"
-            }
-    
-    except _errors.TranscriptsDisabled:
-        return False, {
-            'success': False,
-            'message': f"이 비디오의 자막이 비활성화되어 있습니다: {video_id}"
-        }
-    except _errors.NoTranscriptAvailable:
-        return False, {
-            'success': False,
-            'message': f"이 비디오에는 자막이 없습니다: {video_id}"
-        }
-    except Exception as e:
-        logger.error(f"YouTube Transcript API 사용 중 오류: {str(e)}")
-        return False, {
-            'success': False,
-            'message': f"자막 추출 중 오류 발생: {str(e)}"
-        }
-
-def get_video_info_minimal(video_id: str) -> Dict[str, Any]:
-    """
-    비디오 정보를 가져옵니다.
-    여러 방법으로 시도하고 봇 감지를 우회하도록 개선되었습니다.
-    SSL 인증서 검증 문제를 해결했습니다.
-    """
-    logger.info(f"비디오 정보 가져오기 시작: {video_id}")
-    
-    # SSL 인증서 검증 경고 무시
-    import warnings
-    from urllib3.exceptions import InsecureRequestWarning
-    warnings.filterwarnings('ignore', category=InsecureRequestWarning)
-    
-    # 기본 비디오 정보
-    video_info = {
-        'title': "Unknown",
-        'channelName': "Unknown",
-        'thumbnailUrl': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
-        'videoId': video_id
-    }
-    
-    # 쿠키 파일 생성/사용 (매번 새로운 쿠키 생성)
-    cookies_file = os.path.join(os.path.dirname(__file__), "..", "data", "youtube_cookies.txt")
-    try:
-        cookie_string = create_youtube_cookies(force_new=True)
-        os.makedirs(os.path.dirname(cookies_file), exist_ok=True)
-        with open(cookies_file, 'w', encoding='utf-8') as f:
-            f.write(cookie_string)
-        logger.info(f"새 YouTube 쿠키 생성 완료: {cookies_file}")
-    except Exception as e:
-        logger.warning(f"쿠키 생성 실패 (계속 진행): {str(e)}")
-    
-    # 토르 사용 결정 (USE_TOR_NETWORK 사용)
-    use_tor = USE_TOR_NETWORK
-    
-    # 방법 1: yt-dlp 사용
-    try:
-        # 다양한 사용자 에이전트 중 랜덤 선택
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 11.5; rv:90.0) Gecko/20100101 Firefox/90.0",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36 Edg/91.0.864.59"
-        ]
-        random_user_agent = random.choice(user_agents)
-        
-        # yt-dlp 옵션 설정 (SSL 인증서 검증 비활성화)
-        ydl_opts = {
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
-            'ignoreerrors': True,
-            'nocheckcertificate': True,  # SSL 인증서 검증 비활성화
-            'compat_opts': ['no-certifi', 'no-check-certificates'],  # 인증서 검증 관련 호환성 옵션
-            'cookiefile': cookies_file,
-            'user_agent': random_user_agent,
-            'referer': 'https://www.youtube.com/',
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            'socket_timeout': 15  # 소켓 타임아웃 증가
-        }
-        
-        # 토르 사용 시 추가 옵션
-        if use_tor:
-            ydl_opts.update({
-                'proxy': TOR_PROXY,
-                'source_address': '0.0.0.0',
-            })
-        
-        # Python 환경 변수로 SSL 인증서 검증 비활성화
-        os.environ['PYTHONHTTPSVERIFY'] = '0'
-        
-        # 1초 랜덤 지연 (봇 탐지 방지)
-        time.sleep(random.uniform(0.5, 1.5))
-        
-        # 최대 3번 시도
-        for attempt in range(3):
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                    
-                    if info:
-                        video_info = {
-                            'title': info.get('title', 'Unknown'),
-                            'channelName': info.get('uploader', 'Unknown'),
-                            'thumbnailUrl': info.get('thumbnail', f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"),
-                            'videoId': video_id
-                        }
-                        logger.info(f"yt-dlp로 비디오 정보 가져오기 성공: {video_info['title']}")
-                        return video_info
-            except Exception as e:
-                error_msg = str(e)
-                logger.warning(f"시도 {attempt+1}/3 실패: {error_msg}")
-                
-                # 봇 감지 발견시 쿠키 및 User-Agent 변경
-                if "Sign in to confirm you're not a bot" in error_msg:
-                    # 새로운 쿠키와 User-Agent 생성
+                    # 새 쿠키 생성
                     cookie_string = create_youtube_cookies(force_new=True)
-                    with open(cookies_file, 'w', encoding='utf-8') as f:
+                    cookie_file = os.path.join(os.path.dirname(__file__), "../data", "youtube_cookies.txt")
+                    with open(cookie_file, 'w', encoding='utf-8') as f:
                         f.write(cookie_string)
-                    ydl_opts['user_agent'] = random.choice(user_agents)
-                    # 대기 시간 증가 (봇 탐지 회피)
-                    time.sleep(random.uniform(1.5, 3.0))
-                else:
-                    time.sleep(random.uniform(0.5, 1.5))
-        
-        logger.warning(f"비디오 정보 가져오기 타임아웃, 기본 정보 사용")
-    except Exception as e:
-        logger.error(f"yt-dlp 에러: {str(e)}")
-    
-    # 방법 2: 웹 페이지에서 직접 추출 시도
-    try:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            'User-Agent': get_random_browser_fingerprint(),
-            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Referer': 'https://www.youtube.com/',
-            'Cache-Control': 'max-age=0',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'DNT': '1'
-        }
-        
-        session = requests.Session()
-        
-        # SSL 인증서 검증 비활성화
-        session.verify = False
-        
-        # 쿠키 파일에서 쿠키 로드
-        if os.path.exists(cookies_file):
-            try:
-                cookie_data = parse_cookies_file(cookies_file)
-                for cookie in cookie_data:
-                    session.cookies.set(cookie['name'], cookie['value'])
-            except Exception as e:
-                logger.warning(f"쿠키 로드 실패: {str(e)}")
-        
-        # 프록시 설정 (Tor 사용 시)
-        proxies = None
-        if use_tor:
-            proxies = {
-                'http': TOR_PROXY,
-                'https': TOR_PROXY
-            }
+                    logger.info(f"시도 {attempt+1}/{max_attempts}: 새 쿠키 생성 완료")
+                except Exception as e:
+                    logger.warning(f"쿠키 생성 실패: {str(e)}")
             
-        # 3번 시도
-        for attempt in range(3):
-            try:
-                # 랜덤 지연 (봇 탐지 방지)
-                time.sleep(random.uniform(0.5, 1.0))
-                
-                # SSL 검증 비활성화
-                response = session.get(
-                    url, 
-                    headers=headers, 
-                    proxies=proxies if use_tor else None,
-                    timeout=10,
-                    verify=False
-                )
-                
-                if response.status_code == 200:
-                    # BeautifulSoup으로 메타 태그 추출
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    
-                    # 메타 태그에서 비디오 정보 추출
-                    title_tag = soup.find('meta', property='og:title')
-                    if title_tag and title_tag.get('content'):
-                        video_info['title'] = title_tag.get('content')
-                    
-                    channel_tag = soup.find('meta', property='og:video:tag') or soup.find('span', itemprop='author') or soup.find('meta', itemprop='channelName')
-                    if channel_tag:
-                        if channel_tag.get('content'):
-                            video_info['channelName'] = channel_tag.get('content')
-                        elif channel_tag.find('link', itemprop='name'):
-                            video_info['channelName'] = channel_tag.find('link', itemprop='name').get('content', 'Unknown')
-                    
-                    thumbnail_tag = soup.find('meta', property='og:image')
-                    if thumbnail_tag and thumbnail_tag.get('content'):
-                        video_info['thumbnailUrl'] = thumbnail_tag.get('content')
-                    
-                    if video_info['title'] != 'Unknown':
-                        logger.info(f"웹 스크래핑으로 비디오 정보 가져오기 성공: {video_info['title']}")
-                        return video_info
-                    
-                    # 타이틀이 추출되지 않은 경우
-                    # JavaScript 렌더링된 콘텐츠를 가져오지 못했을 수 있음
-                    logger.warning("페이지에서 타이틀을 추출하지 못했습니다.")
-            except Exception as e:
-                logger.warning(f"웹 스크래핑 시도 {attempt+1}/3 실패: {str(e)}")
-                # User-Agent 변경
-                headers['User-Agent'] = get_random_browser_fingerprint()
-                
-                # 봇 감지 오류 경우 쿠키 재생성
-                cookie_string = create_youtube_cookies(force_new=True)
-                with open(cookies_file, 'w', encoding='utf-8') as f:
-                    f.write(cookie_string)
-                session.cookies.clear()
-    except Exception as e:
-        logger.error(f"웹 스크래핑 에러: {str(e)}")
-    
-    # 기본 정보만 반환
-    logger.warning(f"모든 방법으로 비디오 정보 가져오기 실패, 기본 정보 반환: {video_info}")
-    return video_info
-
-def extract_subtitles_with_transcript_api(video_id: str, language: str, video_info: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-    """
-    YouTube Transcript API를 사용하여 자막을 추출합니다.
-    성능 최적화를 위해 불필요한 작업을 줄이고 빠르게 자막을 추출합니다.
-    실제 비디오 정보를 반환 결과에 명시적으로 포함합니다.
-    프론트엔드 형식에 맞게 응답을 구성합니다.
-    """
-    logger.info(f"YouTube Transcript API로 자막 추출 시작: {video_id}, 언어: {language}")
-    
-    try:
-        # 비디오 정보를 먼저 한번 시도 (YouTube Transcript API는 비디오 정보를 제공하지 않음)
-        # 기존 video_info가 기본값인 경우에만 시도
-        need_video_info = video_info.get('title') == 'Unknown' or video_info.get('channelName') == 'Unknown'
-        
-        if need_video_info:
-            try:
-                # 비디오 정보 업데이트 시도
-                updated_info = extract_minimal_video_info_from_html(video_id)
-                if updated_info:
-                    # 기존 video_info에 없는 정보만 업데이트
-                    for key, value in updated_info.items():
-                        if key in ['title', 'channel_name', 'thumbnail_url']:
-                            target_key = key
-                            if key == 'channel_name':
-                                target_key = 'channelName'
-                            elif key == 'thumbnail_url':
-                                target_key = 'thumbnailUrl'
-                                
-                            # 기존 값이 Unknown일 때만 업데이트
-                            if target_key in video_info and video_info[target_key] == 'Unknown':
-                                video_info[target_key] = value
-                                
-                logger.info(f"HTML에서 비디오 정보 추출 성공: {video_info}")
-            except Exception as e:
-                logger.warning(f"HTML에서 비디오 정보 추출 실패: {str(e)}")
-        
-        # 최적화: 요청된 언어만 시도
-        transcript = None
-        available_langs = []
-        
-        try:
-            # 요청한 언어 코드 (매핑 없이 직접 요청된 언어만 사용)
+            # 비디오 정보 업데이트 시도 (처음 또는 필요한 경우)
+            need_video_info = video_info.get('title') == 'Unknown' or video_info.get('channelName') == 'Unknown'
+            if need_video_info:
+                try:
+                    updated_info = extract_minimal_video_info_from_html(video_id)
+                    if updated_info:
+                        # 기존 video_info에 없는 정보만 업데이트
+                        for key, value in updated_info.items():
+                            if key in ['title', 'channel_name', 'thumbnail_url']:
+                                target_key = key
+                                if key == 'channel_name':
+                                    target_key = 'channelName'
+                                elif key == 'thumbnail_url':
+                                    target_key = 'thumbnailUrl'
+                                    
+                                # 기존 값이 Unknown일 때만 업데이트
+                                if target_key in video_info and video_info[target_key] == 'Unknown':
+                                    video_info[target_key] = value
+                                    
+                    logger.info(f"HTML에서 비디오 정보 추출 성공: {video_info}")
+                except Exception as e:
+                    logger.warning(f"HTML에서 비디오 정보 추출 실패: {str(e)}")
+            
+            # 요청한 언어 코드 (직접 요청된 언어만 사용)
             lang_to_try = language
             logger.info(f"요청 언어 {language}만 시도합니다")
-                
+            
             # 트랜스크립트 목록 확인
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             
-            # 디버그 모드가 아닌 경우 요청 언어만 확인
+            # 사용 가능한 자막 확인
+            transcript = None
+            available_langs = []
+            
+            # 요청 언어만 확인
             for transcript_item in transcript_list:
                 # 요청 언어와 정확히 일치하는 경우만 처리
-                if transcript_item.language_code == lang_to_try:
+                if transcript_item.language_code == lang_to_try or (transcript_item.language_code.split('-')[0] == lang_to_try.split('-')[0]):
                     transcript = transcript_item
                     available_langs.append(transcript_item.language_code)
                     logger.info(f"자막 발견: {transcript_item.language_code}")
@@ -2047,16 +1647,8 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                 elif logger.level <= logging.DEBUG:
                     available_langs.append(transcript_item.language_code)
             
-            # 디버그 레벨에서만 사용 가능한 모든 언어 로깅
-            if available_langs and logger.level <= logging.DEBUG:
-                logger.debug(f"사용 가능한 자막: {available_langs}")
-                
-        except Exception as e:
-            logger.warning(f"트랜스크립트 목록 가져오기 실패: {str(e)}")
-        
-        # 자막 발견된 경우 처리
-        if transcript:
-            try:
+            # 자막 발견된 경우 처리
+            if transcript:
                 # 자막 데이터 가져오기
                 transcript_data = transcript.fetch()
                 
@@ -2100,71 +1692,99 @@ def extract_subtitles_with_transcript_api(video_id: str, language: str, video_in
                             'videoInfo': video_info
                         }
                     }
-            except Exception as e:
-                logger.error(f"자막 데이터 처리 중 오류: {str(e)}")
-        
-        # 직접 특정 언어 요청으로 시도 (최적화: 오직 요청 언어만 시도)
-        if not transcript:
-            try:
-                logger.info(f"직접 요청으로 자막 시도: {language}")
-                transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
-                
-                # 자막 텍스트 및 서브타이틀 항목 생성
-                subtitle_lines = []
-                for item in transcript_data:
-                    text = item.get('text', '').strip()
-                    if text:
-                        subtitle_lines.append(text)
-                
-                subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
-                subtitles = convert_transcript_api_format(transcript_data)
-                
-                if subtitle_text:
-                    logger.info(f"직접 요청으로 자막 추출 성공: {len(subtitle_text)} 자")
-                    
-                    # 최종 비디오 정보 로그
-                    logger.info(f"최종 비디오 정보: {video_info}")
-                    
-                    # 실제 비디오 정보를 반환 결과에 포함
-                    return True, {
-                        'success': True,
-                        'data': {
-                            'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
-                            'subtitles': subtitles,
-                            'videoInfo': video_info
-                        }
-                    }
-            except Exception as e:
-                logger.warning(f"직접 자막 요청({language}) 실패: {str(e)}")
-        
-        # 요청한 언어의 자막을 찾지 못한 경우
-        if available_langs and logger.level <= logging.DEBUG:
-            # 디버그 모드에서만 가능한 언어 목록 포함
-            available_str = ", ".join(available_langs)
-            logger.debug(f"사용 가능한 자막 언어들: {available_str}")
             
-        # 오류 메시지 반환 (가능한 언어 목록 포함하지 않음 - 필요한 경우에만 디버그 로그에 포함)
-        return False, {
-            'success': False,
-            'message': f"요청한 언어({language})의 자막을 찾을 수 없습니다."
-        }
+            # 직접 특정 언어 요청으로 시도
+            if not transcript:
+                try:
+                    logger.info(f"직접 요청으로 자막 시도: {language}")
+                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=[language])
+                    
+                    # 자막 텍스트 및 서브타이틀 항목 생성
+                    subtitle_lines = []
+                    for item in transcript_data:
+                        text = item.get('text', '').strip()
+                        if text:
+                            subtitle_lines.append(text)
+                    
+                    subtitle_text = ' '.join(subtitle_lines)  # 줄바꿈 없이 공백으로 연결
+                    subtitles = convert_transcript_api_format(transcript_data)
+                    
+                    if subtitle_text:
+                        logger.info(f"직접 요청으로 자막 추출 성공: {len(subtitle_text)} 자")
+                        
+                        # 최종 비디오 정보 로그
+                        logger.info(f"최종 비디오 정보: {video_info}")
+                        
+                        # 실제 비디오 정보를 반환 결과에 포함
+                        return True, {
+                            'success': True,
+                            'data': {
+                                'text': subtitle_text,  # 줄바꿈 없이 전체 텍스트
+                                'subtitles': subtitles,
+                                'videoInfo': video_info
+                            }
+                        }
+                except Exception as e:
+                    error_str = str(e)
+                    logger.warning(f"직접 자막 요청({language}) 실패: {error_str}")
+                    
+                    # 봇 감지 여부 확인
+                    if "bot" in error_str.lower() or "429" in error_str or "too many" in error_str.lower():
+                        logger.warning("봇 감지 의심. IP 변경 후 재시도합니다.")
+                        continue
+            
+            # 현재 시도에서 실패했지만 재시도 가능한 경우
+            if attempt < max_attempts - 1:
+                wait_time = random.uniform(2.0, 4.0)
+                logger.info(f"자막 추출 실패, {wait_time:.1f}초 후 새 IP로 재시도...")
+                time.sleep(wait_time)
+                continue
+        
+        except _errors.TranscriptsDisabled as e:
+            logger.warning(f"이 비디오의 자막이 비활성화되어 있습니다: {video_id}")
+            return False, {
+                'success': False,
+                'message': f"이 비디오의 자막이 비활성화되어 있습니다: {video_id}"
+            }
+        
+        except _errors.NoTranscriptAvailable as e:
+            logger.warning(f"이 비디오에는 자막이 없습니다: {video_id}")
+            return False, {
+                'success': False,
+                'message': f"이 비디오에는 자막이 없습니다: {video_id}"
+            }
+        
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"YouTube Transcript API 사용 중 오류: {error_str}")
+            
+            # 봇 감지 또는 요청 제한 오류인 경우 재시도
+            if "bot" in error_str.lower() or "429" in error_str or "too many" in error_str.lower():
+                if attempt < max_attempts - 1:
+                    wait_time = random.uniform(2.0, 4.0) * (attempt + 1)  # 지수 백오프
+                    logger.warning(f"봇 감지 의심. {wait_time:.1f}초 후 새 IP로 재시도...")
+                    time.sleep(wait_time)
+                    continue
+            
+            # 마지막 시도 또는 다른 오류인 경우
+            return False, {
+                'success': False,
+                'message': f"자막 추출 중 오류 발생: {str(e)}"
+            }
     
-    except _errors.TranscriptsDisabled:
-        return False, {
-            'success': False,
-            'message': f"이 비디오의 자막이 비활성화되어 있습니다: {video_id}"
-        }
-    except _errors.NoTranscriptAvailable:
-        return False, {
-            'success': False,
-            'message': f"이 비디오에는 자막이 없습니다: {video_id}"
-        }
-    except Exception as e:
-        logger.error(f"YouTube Transcript API 사용 중 오류: {str(e)}")
-        return False, {
-            'success': False,
-            'message': f"자막 추출 중 오류 발생: {str(e)}"
-        }
+    # 모든 시도 실패 후
+    logger.error(f"모든 시도 후에도 자막을 찾을 수 없습니다: {video_id}")
+    
+    # 디버그 모드에서 사용 가능한 언어 정보 포함
+    if available_langs and logger.level <= logging.DEBUG:
+        available_str = ", ".join(available_langs)
+        logger.debug(f"사용 가능한 자막 언어들: {available_str}")
+    
+    # 오류 메시지 반환
+    return False, {
+        'success': False,
+        'message': f"요청한 언어({language})의 자막을 찾을 수 없습니다."
+    }
 
 def get_ytdlp_base_options(video_id: str, language: str, user_agent: str = None, http_headers: Dict[str, str] = None, cookie_file: str = None):
     """
