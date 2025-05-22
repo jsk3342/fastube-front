@@ -88,7 +88,7 @@ const UrlForm = () => {
   const isError = subtitlesMutation.isError;
 
   return (
-    <Card className="p-6 w-full max-w-4xl mx-auto mb-6 bg-card">
+    <Card className="p-6 w-full max-w-4xl mx-auto mb-6 bg-card/90 backdrop-blur-sm shadow-lg border-opacity-40 relative z-20">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="text-xl font-bold text-center mb-4">
           YouTube 자막 추출기
@@ -100,7 +100,7 @@ const UrlForm = () => {
             placeholder="YouTube URL을 입력하세요"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            className="flex-1"
+            className="flex-1 bg-background/90 backdrop-blur-md shadow-sm border-opacity-70"
             disabled={isLoading}
           />
 
@@ -109,7 +109,7 @@ const UrlForm = () => {
             onValueChange={setLanguage}
             disabled={isLoading}
           >
-            <SelectTrigger className="w-full md:w-[180px]">
+            <SelectTrigger className="w-full md:w-[180px] bg-background/90 backdrop-blur-md shadow-sm border-opacity-70">
               <SelectValue placeholder="언어 선택" />
             </SelectTrigger>
             <SelectContent>
@@ -122,7 +122,11 @@ const UrlForm = () => {
             </SelectContent>
           </Select>
 
-          <Button type="submit" disabled={isLoading || !url}>
+          <Button
+            type="submit"
+            disabled={isLoading || !url}
+            className="bg-primary/90 hover:bg-primary shadow-sm"
+          >
             {isLoading ? <Spinner className="mr-2" /> : null}
             {isLoading ? "처리 중..." : "자막 추출"}
           </Button>

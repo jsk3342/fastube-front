@@ -185,6 +185,81 @@ const TextView = ({
   );
 };
 
+// 애니메이션 배경 컴포넌트
+const AnimatedBackground = () => {
+  return (
+    <div className="fixed inset-0 overflow-hidden pointer-events-none -z-10">
+      {/* 격자 배경 */}
+      <div
+        className="absolute inset-0 z-0"
+        style={{
+          backgroundImage: `
+            linear-gradient(rgba(0,0,0,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(0,0,0,0.03) 1px, transparent 1px)
+          `,
+          backgroundSize: "24px 24px",
+        }}
+      />
+
+      {/* 그라데이션 블롭 */}
+      <div
+        className="absolute w-[300px] h-[300px] rounded-full opacity-60 blur-[70px] z-0"
+        style={{
+          background: "linear-gradient(45deg, #ff6b9d, #c44569)",
+          top: "15%",
+          left: "10%",
+          animation: "float 6s ease-in-out infinite",
+        }}
+      />
+
+      <div
+        className="absolute w-[250px] h-[250px] rounded-full opacity-60 blur-[70px] z-0"
+        style={{
+          background: "linear-gradient(45deg, #4ecdc4, #44a08d)",
+          top: "10%",
+          right: "5%",
+          animation: "float 8s ease-in-out infinite reverse",
+        }}
+      />
+
+      <div
+        className="absolute w-[200px] h-[200px] rounded-full opacity-60 blur-[70px] z-0"
+        style={{
+          background: "linear-gradient(45deg, #ffd93d, #ff9800)",
+          bottom: "10%",
+          left: "15%",
+          animation: "float 7s ease-in-out infinite",
+        }}
+      />
+
+      <div
+        className="absolute w-[280px] h-[280px] rounded-full opacity-60 blur-[70px] z-0"
+        style={{
+          background: "linear-gradient(45deg, #667eea, #764ba2)",
+          bottom: "15%",
+          right: "10%",
+          animation: "float 9s ease-in-out infinite reverse",
+        }}
+      />
+
+      {/* 플로팅 애니메이션 스타일 */}
+      <style>
+        {`
+          @keyframes float {
+            0%, 100% { transform: translateY(0px) translateX(0px); }
+            25% { transform: translateY(-20px) translateX(10px); }
+            50% { transform: translateY(0px) translateX(-10px); }
+            75% { transform: translateY(10px) translateX(5px); }
+          }
+        `}
+      </style>
+    </div>
+  );
+};
+
+// 애니메이션 배경을 전역으로 적용하기 위한 컴포넌트
+export const GlobalAnimatedBackground = AnimatedBackground;
+
 // 메인 자막 결과 컴포넌트
 const SubtitleResult = () => {
   // Zustand store에서 필요한 상태 가져오기
@@ -312,114 +387,133 @@ const SubtitleResult = () => {
   };
 
   return (
-    <Card className="p-6 w-full max-w-4xl mx-auto bg-card">
-      {/* 비디오 정보 영역 */}
-      <div className="mb-4">
-        <h2 className="text-xl font-bold">{title}</h2>
-        <p className="text-muted-foreground">{channelName}</p>
-      </div>
-
-      {/* 임베디드 YouTube 플레이어 */}
-      {videoId && (
+    <div className="relative z-20">
+      <Card className="p-6 w-full max-w-4xl mx-auto bg-card/90 backdrop-blur-sm shadow-lg border-opacity-40">
+        {/* 비디오 정보 영역 */}
         <div className="mb-4">
-          <div className="relative aspect-video w-full overflow-hidden rounded-md">
-            <iframe
-              ref={videoRef}
-              src={`https://www.youtube.com/embed/${videoId}`}
-              title={title}
-              className="absolute inset-0 h-full w-full"
-              allowFullScreen
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-            ></iframe>
-          </div>
+          <h2 className="text-xl font-bold">{title}</h2>
+          <p className="text-muted-foreground">{channelName}</p>
         </div>
-      )}
 
-      {/* 자막 제어 영역 */}
-      <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
-        <h3 className="text-lg font-semibold">추출된 자막</h3>
-
-        <div className="flex flex-wrap gap-2 items-center">
-          {/* 검색 입력 필드 */}
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="자막 검색..."
-              value={searchQuery}
-              onChange={handleSearchChange}
-              className="pl-8 h-9 w-[200px]"
-              onKeyDown={handleKeyDown}
-            />
-            {searchQuery.trim() !== "" && (
-              <Badge className="absolute right-2.5 top-2" variant="secondary">
-                {matchCount}건
-              </Badge>
-            )}
-          </div>
-
-          {/* 뷰 모드 토글 */}
-          <TooltipProvider delayDuration={100}>
-            <ToggleGroup
-              type="single"
-              value={viewMode}
-              onValueChange={handleViewModeChange}
-            >
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <ToggleGroupItem value="text" aria-label="텍스트 보기">
-                    <AlignJustify className="h-4 w-4" />
-                  </ToggleGroupItem>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  텍스트 보기 - 전체 자막을 텍스트로 표시합니다
-                </TooltipContent>
-              </Tooltip>
-
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <ToggleGroupItem value="timeline" aria-label="타임라인 보기">
-                    <List className="h-4 w-4" />
-                  </ToggleGroupItem>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  타임라인 보기 - 시간별로 자막을 나열합니다
-                </TooltipContent>
-              </Tooltip>
-            </ToggleGroup>
-          </TooltipProvider>
-
-          {/* 자막 액션 버튼 */}
-          <Button variant="outline" size="sm" onClick={handleCopySubtitle}>
-            <Copy className="mr-2 h-4 w-4" /> 복사하기
-          </Button>
-
-          <Button variant="outline" size="sm" onClick={handleDownloadSubtitle}>
-            <Download className="mr-2 h-4 w-4" /> 다운로드
-          </Button>
-        </div>
-      </div>
-
-      {/* 자막 내용 뷰 영역 - 전환 애니메이션 추가 */}
-      <div className="transition-all duration-300 ease-in-out">
-        {viewMode === "text" ? (
-          <TextView
-            subtitleText={subtitleText}
-            searchQuery={searchQuery}
-            highlightedText={highlightedText}
-            matchCount={matchCount}
-            textareaRef={textareaRef}
-          />
-        ) : (
-          <div className="h-[500px] overflow-y-auto p-2 border rounded-md transition-all duration-300">
-            <TimelineView
-              subtitleItems={subtitleItems}
-              searchQuery={searchQuery}
-              onTimestampClick={handleTimestampClick}
-            />
+        {/* 임베디드 YouTube 플레이어 */}
+        {videoId && (
+          <div className="mb-4">
+            <div className="relative aspect-video w-full overflow-hidden rounded-md shadow-md">
+              <iframe
+                ref={videoRef}
+                src={`https://www.youtube.com/embed/${videoId}`}
+                title={title}
+                className="absolute inset-0 h-full w-full"
+                allowFullScreen
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+              ></iframe>
+            </div>
           </div>
         )}
-      </div>
-    </Card>
+
+        {/* 자막 제어 영역 */}
+        <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
+          <h3 className="text-lg font-semibold">추출된 자막</h3>
+
+          <div className="flex flex-wrap gap-2 items-center">
+            {/* 검색 입력 필드 */}
+            <div className="relative z-30">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="자막 검색..."
+                value={searchQuery}
+                onChange={handleSearchChange}
+                className="pl-8 h-9 w-[200px] bg-background/90 backdrop-blur-md shadow-sm border-opacity-70"
+                onKeyDown={handleKeyDown}
+              />
+              {searchQuery.trim() !== "" && (
+                <Badge
+                  className="absolute right-2.5 top-2 z-30"
+                  variant="secondary"
+                >
+                  {matchCount}건
+                </Badge>
+              )}
+            </div>
+
+            {/* 뷰 모드 토글 */}
+            <TooltipProvider delayDuration={100}>
+              <ToggleGroup
+                type="single"
+                value={viewMode}
+                onValueChange={handleViewModeChange}
+                className="z-30 bg-background/90 backdrop-blur-md border-opacity-70 rounded-md shadow-sm"
+              >
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <ToggleGroupItem value="text" aria-label="텍스트 보기">
+                      <AlignJustify className="h-4 w-4" />
+                    </ToggleGroupItem>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    텍스트 보기 - 전체 자막을 텍스트로 표시합니다
+                  </TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <ToggleGroupItem
+                      value="timeline"
+                      aria-label="타임라인 보기"
+                    >
+                      <List className="h-4 w-4" />
+                    </ToggleGroupItem>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">
+                    타임라인 보기 - 시간별로 자막을 나열합니다
+                  </TooltipContent>
+                </Tooltip>
+              </ToggleGroup>
+            </TooltipProvider>
+
+            {/* 자막 액션 버튼 */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCopySubtitle}
+              className="z-30 bg-background/90 backdrop-blur-md border-opacity-70 shadow-sm"
+            >
+              <Copy className="mr-2 h-4 w-4" /> 복사하기
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadSubtitle}
+              className="z-30 bg-background/90 backdrop-blur-md border-opacity-70 shadow-sm"
+            >
+              <Download className="mr-2 h-4 w-4" /> 다운로드
+            </Button>
+          </div>
+        </div>
+
+        {/* 자막 내용 뷰 영역 - 전환 애니메이션 추가 */}
+        <div className="transition-all duration-300 ease-in-out">
+          {viewMode === "text" ? (
+            <TextView
+              subtitleText={subtitleText}
+              searchQuery={searchQuery}
+              highlightedText={highlightedText}
+              matchCount={matchCount}
+              textareaRef={textareaRef}
+            />
+          ) : (
+            <div className="h-[500px] overflow-y-auto p-2 border rounded-md bg-background/90 backdrop-blur-md transition-all duration-300 shadow-md border-opacity-70">
+              <TimelineView
+                subtitleItems={subtitleItems}
+                searchQuery={searchQuery}
+                onTimestampClick={handleTimestampClick}
+              />
+            </div>
+          )}
+        </div>
+      </Card>
+    </div>
   );
 };
 
